@@ -229,6 +229,43 @@ fn host_configure(rotate: Option<bool>, allow_display: Option<bool>) -> Result<(
     run_json("legato-host", &refs).map(|_| ())
 }
 
+/// Windows 서비스 모드 상태 (다른 OS 는 supported=false).
+#[tauri::command]
+fn service_status() -> Result<serde_json::Value, String> {
+    run_json("legato-host", &["service", "status", "--json"])
+}
+
+/// 서비스 설치·제거. 관리자 권한이 필요해서 UAC 확인 창을 띄워 실행한다.
+#[tauri::command]
+async fn service_change(install: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let exe = helper("legato-host")?;
+        let dir = legato_core::paths::config_dir().map_err(|e| e.to_string())?;
+        let action = if install { "install" } else { "uninstall" };
+        // PowerShell 문자열은 작은따옴표 안에서 ' 를 '' 로 쓴다.
+        let q = |s: &str| format!("'{}'", s.replace('\'', "''"));
+        let args = format!("@({}, {}, 'service', {})", q("--config-dir"), q(&dir.to_string_lossy()), q(action));
+        let script = format!(
+            "$p = Start-Process -FilePath {} -ArgumentList {} -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode",
+            q(&exe.to_string_lossy()),
+            args
+        );
+        let status = tauri::async_runtime::spawn_blocking(move || {
+            no_window(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script])).status()
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        if status.success() { Ok(()) } else { Err("서비스 변경 실패 (관리자 권한을 거부했거나 오류)".into()) }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = install;
+        Err("서비스 모드는 Windows 전용이야".into())
+    }
+}
+
 #[tauri::command]
 fn host_request_permissions() -> Result<serde_json::Value, String> {
     run_json("legato-host", &["request-permissions"])
@@ -452,6 +489,8 @@ fn main() {
             host_clear_access_code,
             host_configure,
             host_request_permissions,
+            service_status,
+            service_change,
             connect,
             forget_code,
             get_settings,

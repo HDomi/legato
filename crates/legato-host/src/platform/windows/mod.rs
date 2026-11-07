@@ -5,6 +5,7 @@ mod desktop;
 mod displays;
 mod input;
 mod keymap;
+pub mod service;
 
 pub use capture::{CaptureHandle, start_capture};
 pub use displays::list_displays;

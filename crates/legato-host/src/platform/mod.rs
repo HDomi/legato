@@ -155,6 +155,8 @@ pub use macos::{
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+pub use self::windows::service;
+#[cfg(windows)]
 pub use self::windows::{
     CaptureHandle, Injector, accessibility_trusted, init_process, list_displays, prevent_sleep, request_accessibility,
     request_screen_capture, screen_capture_allowed, start_capture, wake_display,

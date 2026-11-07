@@ -65,6 +65,8 @@ export const api = {
     acceptNewFingerprint: boolean;
   }) => invoke<void>('connect', opts),
   forgetCode: (address: string) => invoke<void>('forget_code', { address }),
+  serviceStatus: () => invoke<{ installed: boolean; running: boolean; supported?: boolean }>('service_status'),
+  serviceChange: (install: boolean) => invoke<void>('service_change', { install }),
   checkUpdate: () => invoke<UpdateInfo>('check_update'),
   installUpdate: (version: string, force: boolean) => invoke<void>('install_update', { version, force }),
   getSettings: () => invoke<AppSettings>('get_settings'),

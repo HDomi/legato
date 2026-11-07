@@ -14,6 +14,8 @@ export default function HostPanel() {
   const [editingCode, setEditingCode] = useState(false);
   const [code1, setCode1] = useState('');
   const [code2, setCode2] = useState('');
+  const [service, setService] = useState<{ installed: boolean; running: boolean; supported?: boolean } | null>(null);
+  const [serviceBusy, setServiceBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -22,6 +24,7 @@ export default function HostPanel() {
       setDisplayPassword(i.display_password);
       setRunning(await api.hostRunning());
       setSettings(await api.getSettings());
+      setService(await api.serviceStatus().catch(() => null));
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -115,6 +118,24 @@ export default function HostPanel() {
   };
 
   const needsPermission = info && (!info.screen_capture || !info.accessibility);
+  const isWindows = navigator.userAgent.includes('Windows');
+  const serviceRunning = !!service?.running;
+
+  const changeService = async (install: boolean) => {
+    setServiceBusy(true);
+    setError(null);
+    try {
+      // 앱 호스트와 서비스가 같은 포트를 쓰므로 설치 전에 앱 쪽 호스트를 끈다.
+      if (install && running) await api.hostStop();
+      await api.serviceChange(install);
+      setNotice(install ? '서비스 모드를 켰어. 로그인 화면 · UAC 창까지 원격으로 볼 수 있어.' : '서비스 모드를 껐어.');
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setServiceBusy(false);
+      refresh();
+    }
+  };
 
   return (
     <section className="panel">
@@ -125,9 +146,13 @@ export default function HostPanel() {
             {running ? '아래 주소로 다른 컴퓨터에서 접속할 수 있어.' : '켜면 이 컴퓨터 화면을 원격으로 열어줘.'}
           </p>
         </div>
-        <button className={running ? 'danger' : 'primary'} onClick={toggle}>
-          {running ? '끄기' : '켜기'}
-        </button>
+        {serviceRunning ? (
+          <span className="muted small-text">서비스 모드로 대기 중</span>
+        ) : (
+          <button className={running ? 'danger' : 'primary'} onClick={toggle}>
+            {running ? '끄기' : '켜기'}
+          </button>
+        )}
       </div>
 
       {error && <div className="card error">{error}</div>}
@@ -242,6 +267,22 @@ export default function HostPanel() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {isWindows && service && (
+        <div className="card">
+          <h3>Windows 서비스 모드</h3>
+          <p className="muted small-text">
+            Windows 가 켜지면 로그인 전부터 접속을 받는다. 로그인 화면 · 잠금 화면 · UAC(관리자 허용) 창도 원격으로 보고 누를 수 있고,
+            원격 메뉴의 Ctrl+Alt+Del 도 동작한다. 설치 · 제거에는 관리자 권한이 필요해.
+          </p>
+          <div className="row">
+            <span>{service.running ? '실행 중' : service.installed ? '설치됨 (멈춤)' : '꺼짐'}</span>
+            <button className="small" disabled={serviceBusy} onClick={() => changeService(!service.installed)}>
+              {serviceBusy ? '처리 중…' : service.installed ? '서비스 제거' : '서비스 설치'}
+            </button>
+          </div>
         </div>
       )}
 

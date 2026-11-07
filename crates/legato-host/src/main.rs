@@ -25,8 +25,29 @@ use crate::config::{HostConfig, load_identity};
 #[derive(Parser)]
 #[command(name = "legato-host", version, about = "Legato 호스트: 이 컴퓨터 화면을 원격으로 열어준다")]
 struct Cli {
+    /// 로그를 표준 에러 대신 이 파일에 덧붙인다 (서비스 모드용).
+    #[arg(long, global = true)]
+    log_file: Option<std::path::PathBuf>,
+    /// 설정 폴더 (LEGATO_CONFIG_DIR 와 같음). 서비스는 설치한 사용자의 설정 폴더를 쓴다.
+    #[arg(long, global = true)]
+    config_dir: Option<std::path::PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum ServiceCmd {
+    /// 서비스를 설치하고 시작한다 (관리자 권한). 로그인 화면 · UAC 확인 창까지 원격으로 다룰 수 있다.
+    Install,
+    /// 서비스를 멈추고 지운다 (관리자 권한).
+    Uninstall,
+    /// 설치·실행 상태.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// 서비스 관리자가 실행하는 진입점 (직접 쓰지 않는다).
+    Run,
 }
 
 #[derive(Subcommand)]
@@ -79,17 +100,33 @@ enum Cmd {
     },
     /// 화면 기록·손쉬운 사용 권한을 요청한다 (macOS).
     RequestPermissions,
+    /// Windows 서비스 모드 관리.
+    Service {
+        #[command(subcommand)]
+        action: ServiceCmd,
+    },
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,quinn=warn".into()),
-        )
-        .init();
     platform::init_process();
     let cli = Cli::parse();
+    if let Some(dir) = &cli.config_dir {
+        // 아직 스레드가 하나뿐일 때 설정한다 (서비스 헬퍼도 이 값을 물려받는다).
+        unsafe { std::env::set_var("LEGATO_CONFIG_DIR", dir) };
+    }
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,quinn=warn".into());
+    match &cli.log_file {
+        Some(path) => {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .with_context(|| format!("로그 파일 열기 실패: {}", path.display()))?;
+            tracing_subscriber::fmt().with_writer(std::sync::Mutex::new(file)).with_ansi(false).with_env_filter(filter).init();
+        }
+        None => tracing_subscriber::fmt().with_writer(std::io::stderr).with_env_filter(filter).init(),
+    }
     match cli.cmd {
         Cmd::Serve { port, bind, max_width, fps, bitrate, allow_sleep } => {
             serve(port, &bind, max_width, fps, bitrate, allow_sleep)
@@ -125,6 +162,43 @@ fn main() -> Result<()> {
             println!("{}", serde_json::json!({ "screen_capture": screen, "accessibility": ax }));
             Ok(())
         }
+        Cmd::Service { action } => service_cmd(action),
+    }
+}
+
+#[cfg(windows)]
+fn service_cmd(action: ServiceCmd) -> Result<()> {
+    use platform::service;
+    match action {
+        ServiceCmd::Install => {
+            let dir = legato_core::paths::config_dir()?;
+            let port = HostConfig::load()?.port;
+            service::install(&dir, port)?;
+            println!("{}", serde_json::json!({ "ok": true }));
+        }
+        ServiceCmd::Uninstall => {
+            service::uninstall()?;
+            println!("{}", serde_json::json!({ "ok": true }));
+        }
+        ServiceCmd::Status { json } => {
+            let (installed, running) = service::status();
+            let v = serde_json::json!({ "installed": installed, "running": running });
+            if json { println!("{v}") } else { println!("설치 {installed}, 실행 {running}") }
+        }
+        ServiceCmd::Run => service::run_dispatcher()?,
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn service_cmd(action: ServiceCmd) -> Result<()> {
+    match action {
+        // 다른 OS 에서는 항상 "없음" (앱이 같은 명령으로 물어본다).
+        ServiceCmd::Status { .. } => {
+            println!("{}", serde_json::json!({ "installed": false, "running": false, "supported": false }));
+            Ok(())
+        }
+        _ => bail!("서비스 모드는 Windows 전용이야"),
     }
 }
 
