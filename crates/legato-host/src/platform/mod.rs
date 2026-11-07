@@ -155,6 +155,12 @@ pub use macos::login_agent;
 pub fn macos_ime_toggle() -> Option<String> {
     macos::ime::toggle_korean()
 }
+/// 호스트가 Dock 에 아이콘으로 나타나지 않게 한다 (macOS 만, 다른 OS 는 할 일 없음). 메인 스레드에서 부른다.
+pub fn hide_from_dock() {
+    #[cfg(target_os = "macos")]
+    macos::hide_from_dock();
+}
+
 #[cfg(target_os = "macos")]
 pub use macos::{
     CaptureHandle, Injector, accessibility_trusted, keep_awake, list_displays, prevent_sleep, request_accessibility,

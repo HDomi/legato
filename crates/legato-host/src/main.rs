@@ -430,6 +430,8 @@ fn serve(
         tracing::warn!("화면 기록 권한이 없습니다. 접속하면 화면 캡처가 실패합니다 (legato-host request-permissions)");
     }
 
+    // 메인 스레드에서 Dock 아이콘을 숨긴다 (접속 중 Dock 에 Legato 아이콘이 하나 더 생겨 튀지 않게).
+    platform::hide_from_dock();
     let _sleep_guard = if allow_sleep { None } else { platform::prevent_sleep() };
 
     let bind = bind.to_string();

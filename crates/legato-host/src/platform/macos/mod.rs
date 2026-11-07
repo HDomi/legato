@@ -118,3 +118,19 @@ pub fn keep_awake() -> Option<KeepAwake> {
         .ok()
         .map(KeepAwake)
 }
+
+/// 호스트를 Dock 에 나타나지 않는 백그라운드 프로세스로 만든다.
+///
+/// 호스트 실행 파일은 앱 번들(`Contents/MacOS`) 안에 있어서, 화면 캡처·입력 소스 전환으로 WindowServer 에
+/// 붙는 순간 macOS 가 별도 앱으로 보고 Dock 에 아이콘을 띄운다(앱 초기화를 마치지 않아 계속 튄다).
+/// 시작할 때 메인 스레드에서 활성화 정책을 Prohibited 로 정해 이를 막는다.
+pub fn hide_from_dock() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    let Some(mtm) = MainThreadMarker::new() else {
+        tracing::warn!("메인 스레드가 아니라 Dock 숨기기를 건너뜀");
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Prohibited);
+}
