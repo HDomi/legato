@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, type Entry } from './api';
+import { useI18n } from './i18n';
 
 interface SessionState {
   id: string;
@@ -7,10 +8,13 @@ interface SessionState {
   status: 'connecting' | 'connected' | 'closed';
   message?: string;
   useSaved: boolean;
+  /** 호스트 인증서 지문이 바뀌어서 끊겼는지. */
+  fingerprintChanged?: boolean;
 }
 
 /** 다른 컴퓨터에 접속하는 쪽 (뷰어). */
 export default function ConnectPanel() {
+  const { t } = useI18n();
   const [address, setAddress] = useState('');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
@@ -28,24 +32,31 @@ export default function ConnectPanel() {
         prev.map((s) => {
           if (s.id !== l.tag) return s;
           // 뷰어가 closed 이벤트 없이 끝났으면 (창 강제 종료 등) 연결 문구를 남기지 않는다.
-          if (l.kind === 'exit') return s.status === 'closed' ? s : { ...s, status: 'closed', message: '연결 끝' };
-          if (l.kind === 'log') {
-            const line = String(l.value);
-            if (line.startsWith('알림:')) return { ...s, message: line.replace(/^알림:\s*/, '') };
-            return line.startsWith('오류:') ? { ...s, message: line.replace(/^오류:\s*/, '') } : s;
-          }
+          if (l.kind === 'exit') return s.status === 'closed' ? s : { ...s, status: 'closed', message: t('connect.ended') };
+          // 사람용 로그는 무시하고 JSON 이벤트만 본다 (언어와 무관하게).
+          if (l.kind === 'log') return s;
           const { event, data } = l.value;
           if (event === 'connected')
-            return { ...s, status: 'connected', message: `${data.host} 에 연결됨${data.via_access_code ? ' (접속 코드)' : ''}` };
+            return {
+              ...s,
+              status: 'connected',
+              message: t('connect.connectedTo', { host: data.host }) + (data.via_access_code ? t('connect.viaCode') : ''),
+            };
           if (event === 'notice') return { ...s, message: data.message };
-          if (event === 'closed') return { ...s, status: 'closed', message: data.error ?? '연결 끝' };
+          if (event === 'closed')
+            return {
+              ...s,
+              status: 'closed',
+              message: data.error ?? t('connect.ended'),
+              fingerprintChanged: data.code === 'fingerprint_changed',
+            };
           return s;
         }),
       );
     });
     const un2 = api.onCodeSaved((p) => {
       if (p.error) {
-        setSessions((prev) => prev.map((s) => (s.id === p.tag ? { ...s, message: `${s.message ?? ''} · 저장 안 함: ${p.error}` } : s)));
+        setSessions((prev) => prev.map((s) => (s.id === p.tag ? { ...s, message: `${s.message ?? ''} · ${t('connect.notSaved', { reason: p.error ?? '' })}` } : s)));
         return;
       }
       // 저장한 주소는 주소록에 넣고 "코드 저장됨" 으로 표시한다.
@@ -61,7 +72,7 @@ export default function ConnectPanel() {
       un.then((f) => f());
       un2.then((f) => f());
     };
-  }, []);
+  }, [t]);
 
   const saveBook = (next: Entry[]) => {
     setBook(next);
@@ -106,19 +117,19 @@ export default function ConnectPanel() {
       <div className="card">
         <div className="form">
           <label>
-            주소
+            {t('connect.address')}
             <input
-              placeholder="192.168.0.10 또는 192.168.0.10:47820"
+              placeholder={t('connect.addressPlaceholder')}
               value={address}
               onChange={(e) => setAddress(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && connect(address)}
             />
           </label>
           <label>
-            비밀번호 또는 접속 코드
+            {t('connect.secret')}
             <input
               type="password"
-              placeholder="표시 비밀번호나 고정 접속 코드"
+              placeholder={t('connect.secretPlaceholder')}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && connect(address)}
@@ -126,21 +137,21 @@ export default function ConnectPanel() {
           </label>
           <label className="check">
             <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-            고정 접속 코드면 {isMac ? '키체인' : '자격 증명 관리자'}에 저장 (다음부터 바로 접속)
+            {isMac ? t('connect.remember.mac') : t('connect.remember.win')}
           </label>
           {isMac && (
             <label className="check">
               <input type="checkbox" checked={windowed} onChange={(e) => setWindowed(e.target.checked)} />
-              전체화면 Space 대신 창으로 열기
+              {t('connect.windowed')}
             </label>
           )}
           <div className="row">
             <button className="primary" onClick={() => connect(address)} disabled={!address.trim() || !password}>
-              접속
+              {t('connect.go')}
             </button>
-            <input className="grow" placeholder="이름 (주소록 저장용)" value={name} onChange={(e) => setName(e.target.value)} />
+            <input className="grow" placeholder={t('connect.namePlaceholder')} value={name} onChange={(e) => setName(e.target.value)} />
             <button onClick={addToBook} disabled={!address.trim()}>
-              주소록에 추가
+              {t('connect.addToBook')}
             </button>
           </div>
         </div>
@@ -148,27 +159,27 @@ export default function ConnectPanel() {
 
       {book.length > 0 && (
         <div className="card">
-          <h3>주소록</h3>
+          <h3>{t('connect.book')}</h3>
           <ul className="list">
             {book.map((e) => (
               <li key={e.address}>
                 <button className="link" onClick={() => setAddress(e.address)}>
                   <strong>{e.name}</strong> {e.name !== e.address && <span className="mono muted">{e.address}</span>}
-                  {e.saved_code && <span className="tag">코드 저장됨</span>}
+                  {e.saved_code && <span className="tag">{t('connect.saved')}</span>}
                 </button>
                 <div className="row">
                   {e.saved_code ? (
                     <>
                       <button className="small primary" onClick={() => connect(e.address, { useSaved: true })}>
-                        바로 접속
+                        {t('connect.quick')}
                       </button>
                       <button className="small" onClick={() => forget(e.address)}>
-                        코드 지우기
+                        {t('connect.forget')}
                       </button>
                     </>
                   ) : (
                     <button className="small primary" disabled={!password} onClick={() => connect(e.address)}>
-                      접속
+                      {t('connect.go')}
                     </button>
                   )}
                   <button
@@ -178,7 +189,7 @@ export default function ConnectPanel() {
                       saveBook(book.filter((x) => x.address !== e.address));
                     }}
                   >
-                    삭제
+                    {t('connect.delete')}
                   </button>
                 </div>
               </li>
@@ -189,7 +200,7 @@ export default function ConnectPanel() {
 
       {sessions.length > 0 && (
         <div className="card">
-          <h3>세션</h3>
+          <h3>{t('connect.sessions')}</h3>
           <ul className="list">
             {sessions.map((s) => (
               <li key={s.id}>
@@ -197,9 +208,9 @@ export default function ConnectPanel() {
                   <span className={`dot ${s.status}`} /> <span className="mono">{s.address}</span>
                   {s.message && <div className="muted small-text">{s.message}</div>}
                 </div>
-                {s.status === 'closed' && s.message?.includes('지문이 예전과 달라') && (
+                {s.status === 'closed' && s.fingerprintChanged && (
                   <button className="small danger" onClick={() => connect(s.address, { useSaved: s.useSaved, acceptNew: true })}>
-                    새 지문 믿고 다시 접속
+                    {t('connect.trustNew')}
                   </button>
                 )}
               </li>

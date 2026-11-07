@@ -43,7 +43,10 @@ fn asset_name(version: &str) -> String {
 }
 
 fn get(url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
-    ureq::get(url).header("User-Agent", USER_AGENT).call().map_err(|e| format!("{url} 요청 실패: {e}"))
+    ureq::get(url)
+        .header("User-Agent", USER_AGENT)
+        .call()
+        .map_err(|e| format!("{} ({url}): {e}", crate::tr("요청에 실패했습니다", "Request failed")))
 }
 
 /// 최신 릴리스 태그. GitHub API 는 비로그인 호출 한도(IP 당 시간당 60회)가 있어서 회사처럼
@@ -51,15 +54,22 @@ fn get(url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
 fn latest_tag() -> Result<String, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder().max_redirects(0).build().into();
     let url = format!("https://github.com/{REPO}/releases/latest");
-    let res = agent.get(&url).header("User-Agent", USER_AGENT).call().map_err(|e| format!("{url} 요청 실패: {e}"))?;
+    let res = agent
+        .get(&url)
+        .header("User-Agent", USER_AGENT)
+        .call()
+        .map_err(|e| format!("{} ({url}): {e}", crate::tr("요청에 실패했습니다", "Request failed")))?;
     let loc = res
         .headers()
         .get("location")
         .and_then(|v| v.to_str().ok())
-        .ok_or("최신 릴리스를 찾을 수 없음 (릴리스가 아직 없을 수 있어)")?;
+        .ok_or_else(|| crate::tr("최신 릴리스를 찾지 못했습니다", "Couldn't find the latest release"))?;
     let tag = loc.rsplit('/').next().unwrap_or_default().to_string();
     if parse_version(&tag).is_none() {
-        return Err(format!("최신 릴리스 태그 형식이 이상해: {tag}"));
+        return Err(format!(
+            "{}: {tag}",
+            crate::tr("최신 릴리스 태그 형식이 올바르지 않습니다", "Unexpected release tag")
+        ));
     }
     Ok(tag)
 }
@@ -104,21 +114,26 @@ pub fn check(current: &str) -> Result<UpdateInfo, String> {
 fn download(url: &str, dest: &Path) -> Result<String, String> {
     let res = get(url)?;
     let mut reader = res.into_body().into_reader().take(MAX_DOWNLOAD + 1);
-    let mut file = std::fs::File::create(dest).map_err(|e| format!("{} 만들기 실패: {e}", dest.display()))?;
+    let mut file = std::fs::File::create(dest).map_err(|e| {
+        format!("{} ({}): {e}", crate::tr("파일을 만들지 못했습니다", "Couldn't create the file"), dest.display())
+    })?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 256 * 1024];
     let mut total = 0u64;
     loop {
-        let n = reader.read(&mut buf).map_err(|e| format!("받기 실패: {e}"))?;
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("{}: {e}", crate::tr("받는 중 오류가 났습니다", "Download error")))?;
         if n == 0 {
             break;
         }
         total += n as u64;
         if total > MAX_DOWNLOAD {
-            return Err("파일이 너무 큼".into());
+            return Err(crate::tr("파일이 너무 큽니다", "The file is too large"));
         }
         hasher.update(&buf[..n]);
-        std::io::Write::write_all(&mut file, &buf[..n]).map_err(|e| format!("저장 실패: {e}"))?;
+        std::io::Write::write_all(&mut file, &buf[..n])
+            .map_err(|e| format!("{}: {e}", crate::tr("저장하지 못했습니다", "Couldn't save")))?;
     }
     Ok(hex::encode(hasher.finalize()))
 }
@@ -141,7 +156,7 @@ fn release_file_url(version: &str, name: &str) -> String {
 /// `resume_host`: 다시 열린 앱이 호스트를 바로 켜도록 한다.
 pub fn install(version: &str, resume_host: bool) -> Result<(), String> {
     if parse_version(version).is_none() {
-        return Err(format!("버전 형식이 이상해: {version}"));
+        return Err(format!("{}: {version}", crate::tr("버전 형식이 올바르지 않습니다", "Invalid version")));
     }
     let dir = cache_dir()?.join(version);
     let _ = std::fs::remove_dir_all(&dir);
@@ -149,12 +164,23 @@ pub fn install(version: &str, resume_host: bool) -> Result<(), String> {
 
     let name = asset_name(version);
     let sums = sha256sums(version)?;
-    let want = expected_hash(&sums, &name).ok_or(format!("SHA256SUMS 에 {name} 이 없음"))?;
+    let want = expected_hash(&sums, &name).ok_or_else(|| {
+        format!(
+            "{}: {name}",
+            crate::tr("체크섬 목록에 이 기기용 파일이 없습니다", "The checksum list has no file for this device")
+        )
+    })?;
     let file = dir.join(&name);
     let got = download(&release_file_url(version, &name), &file)?;
     if got != want {
         let _ = std::fs::remove_file(&file);
-        return Err(format!("체크섬이 달라서 설치하지 않았어 (기대 {want}, 실제 {got})"));
+        return Err(format!(
+            "{} ({want} / {got})",
+            crate::tr(
+                "받은 파일의 체크섬이 달라 설치하지 않았습니다",
+                "The download's checksum didn't match, so it wasn't installed"
+            )
+        ));
     }
     platform_install(&dir, &file, version, resume_host)
 }
@@ -163,7 +189,7 @@ fn cache_dir() -> Result<PathBuf, String> {
     let base = if cfg!(windows) {
         std::env::temp_dir().join("Legato-update")
     } else {
-        let home = std::env::var_os("HOME").ok_or("HOME 없음")?;
+        let home = std::env::var_os("HOME").ok_or_else(|| "HOME".to_string())?;
         PathBuf::from(home).join("Library/Caches/com.hdomi.legato/update")
     };
     std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
@@ -187,12 +213,12 @@ fn designated_requirement(app: &Path) -> Option<String> {
 
 /// ad-hoc 서명이면 지정 요구사항이 cdhash 라서 업데이트마다 권한이 초기화된다.
 #[cfg(target_os = "macos")]
-fn current_is_adhoc() -> bool {
+pub fn current_is_adhoc() -> bool {
     current_bundle().and_then(|a| designated_requirement(&a)).is_none_or(|r| r.contains("cdhash"))
 }
 
 #[cfg(not(target_os = "macos"))]
-fn current_is_adhoc() -> bool {
+pub fn current_is_adhoc() -> bool {
     false
 }
 
@@ -208,26 +234,44 @@ fn plist_value(app: &Path, key: &str) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn platform_install(dir: &Path, zip: &Path, version: &str, resume_host: bool) -> Result<(), String> {
-    let current = current_bundle().ok_or("앱 번들 안에서 실행 중이 아니라 업데이트할 수 없어")?;
-    let parent = current.parent().ok_or("앱 폴더를 찾을 수 없음")?;
+    let current = current_bundle().ok_or_else(|| {
+        crate::tr(
+            "앱 번들 안에서 실행 중이 아니라 업데이트할 수 없습니다",
+            "Not running from the app bundle, so it can't update itself",
+        )
+    })?;
+    let parent =
+        current.parent().ok_or_else(|| crate::tr("앱 폴더를 찾을 수 없습니다", "Can't find the app folder"))?;
     if parent.starts_with("/Volumes") || current.to_string_lossy().contains("/AppTranslocation/") {
-        return Err("DMG 안이나 격리된 위치에서 실행 중이야. 응용 프로그램 폴더로 옮긴 뒤 다시 시도해".into());
+        return Err(crate::tr(
+            "DMG 안이나 격리된 위치에서 실행 중입니다. 응용 프로그램 폴더로 옮긴 뒤 다시 시도해 주세요",
+            "Running from the DMG or a quarantined location. Move the app to Applications and try again",
+        ));
     }
     let probe = parent.join(".legato-write-test");
-    std::fs::write(&probe, b"").map_err(|_| format!("{} 에 쓸 수 없어서 교체할 수 없어", parent.display()))?;
+    std::fs::write(&probe, b"").map_err(|_| {
+        format!(
+            "{} ({})",
+            crate::tr("이 폴더에 쓸 수 없어 교체할 수 없습니다", "Can't write to this folder, so it can't be replaced"),
+            parent.display()
+        )
+    })?;
     let _ = std::fs::remove_file(&probe);
 
     let unpack = dir.join("unpacked");
     let st = Command::new("ditto").args(["-x", "-k"]).arg(zip).arg(&unpack).status().map_err(|e| e.to_string())?;
     if !st.success() {
-        return Err("zip 풀기 실패".into());
+        return Err(crate::tr("압축을 풀지 못했습니다", "Couldn't unpack the update"));
     }
     let new_app = unpack.join("Legato.app");
     if plist_value(&new_app, "CFBundleIdentifier").as_deref() != Some("com.hdomi.legato") {
-        return Err("받은 앱의 번들 id 가 달라".into());
+        return Err(crate::tr("받은 앱의 번들 ID 가 다릅니다", "The downloaded app has a different bundle ID"));
     }
     if plist_value(&new_app, "CFBundleShortVersionString").as_deref() != Some(version) {
-        return Err("받은 앱의 버전이 릴리스와 달라".into());
+        return Err(crate::tr(
+            "받은 앱의 버전이 릴리스와 다릅니다",
+            "The downloaded app's version doesn't match the release",
+        ));
     }
     let ok = Command::new("codesign")
         .args(["--verify", "--deep", "--strict"])
@@ -235,7 +279,10 @@ fn platform_install(dir: &Path, zip: &Path, version: &str, resume_host: bool) ->
         .status()
         .map_err(|e| e.to_string())?;
     if !ok.success() {
-        return Err("받은 앱의 서명 검증 실패".into());
+        return Err(crate::tr(
+            "받은 앱의 서명을 확인하지 못했습니다",
+            "The downloaded app's signature couldn't be verified",
+        ));
     }
     // 지금 앱이 인증서로 서명돼 있으면 새 앱도 같은 요구사항을 만족해야 한다.
     if let Some(req) = designated_requirement(&current)
@@ -248,7 +295,10 @@ fn platform_install(dir: &Path, zip: &Path, version: &str, resume_host: bool) ->
             .status()
             .map_err(|e| e.to_string())?;
         if !st.success() {
-            return Err("받은 앱이 지금 앱과 다른 인증서로 서명돼 있어서 설치하지 않았어".into());
+            return Err(crate::tr(
+                "받은 앱이 지금 앱과 다른 인증서로 서명되어 있어 설치하지 않았습니다",
+                "The downloaded app is signed with a different certificate, so it wasn't installed",
+            ));
         }
     }
 
@@ -288,20 +338,24 @@ open "$CUR" {args}
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("설치 스크립트 실행 실패: {e}"))?;
+        .map_err(|e| {
+            format!("{}: {e}", crate::tr("설치 스크립트를 실행하지 못했습니다", "Couldn't run the install script"))
+        })?;
     Ok(())
 }
 
 #[cfg(windows)]
 fn platform_install(_dir: &Path, exe: &Path, _version: &str, _resume_host: bool) -> Result<(), String> {
     // NSIS 설치 프로그램을 띄운다. 앱이 끝나야 파일을 덮어쓸 수 있으므로 호출한 쪽이 곧바로 앱을 끝낸다.
-    Command::new(exe).spawn().map_err(|e| format!("설치 프로그램 실행 실패: {e}"))?;
+    Command::new(exe).spawn().map_err(|e| {
+        format!("{}: {e}", crate::tr("설치 프로그램을 실행하지 못했습니다", "Couldn't run the installer"))
+    })?;
     Ok(())
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
 fn platform_install(_dir: &Path, _file: &Path, _version: &str, _resume_host: bool) -> Result<(), String> {
-    Err("이 OS 는 앱 안 업데이트를 지원하지 않아".into())
+    Err(crate::tr("이 OS 에서는 앱 안 업데이트를 지원하지 않습니다", "In-app updates aren't supported on this OS"))
 }
 
 #[cfg(test)]

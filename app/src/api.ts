@@ -29,6 +29,15 @@ export interface UpdateInfo {
 export interface AppSettings {
   auto_host: boolean;
   launch_at_login: boolean;
+  lang: 'ko' | 'en';
+  auto_update_check: boolean;
+  caps_hangul: boolean;
+  os: 'macos' | 'windows' | 'other';
+}
+
+export interface AppInfo {
+  version: string;
+  adhoc: boolean;
 }
 
 export interface Entry {
@@ -72,7 +81,10 @@ export const api = {
   checkUpdate: () => invoke<UpdateInfo>('check_update'),
   installUpdate: (version: string, force: boolean) => invoke<void>('install_update', { version, force }),
   getSettings: () => invoke<AppSettings>('get_settings'),
-  setSettings: (s: Partial<{ autoHost: boolean; launchAtLogin: boolean }>) => invoke<void>('set_settings', s),
+  setSettings: (
+    s: Partial<{ autoHost: boolean; launchAtLogin: boolean; lang: string; autoUpdateCheck: boolean; capsHangul: boolean }>,
+  ) => invoke<void>('set_settings', s),
+  appInfo: () => invoke<AppInfo>('app_info'),
   onCodeSaved: (cb: (p: { tag: string; address: string; error: string | null }) => void): Promise<UnlistenFn> =>
     listen<{ tag: string; address: string; error: string | null }>('code-saved', (e) => cb(e.payload)),
   loadAddresses: () => invoke<Entry[]>('load_addresses'),

@@ -28,10 +28,21 @@ struct HostProc(Mutex<Option<Child>>);
 /// 같은 폴더에 있는 도우미 실행 파일 경로. 개발 중에는 cargo target 폴더, 배포본에서는 앱 번들 안.
 fn helper(name: &str) -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let dir = exe.parent().ok_or("실행 파일 폴더를 찾을 수 없음")?;
+    let dir = exe.parent().ok_or_else(|| tr("실행 파일 폴더를 찾을 수 없습니다", "Can't find the app folder"))?;
     let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
     let path = dir.join(file);
-    if path.exists() { Ok(path) } else { Err(format!("{} 이 없어. 먼저 빌드해줘", path.display())) }
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(format!(
+            "{}: {}",
+            tr(
+                "필요한 파일이 없습니다. 앱을 다시 설치해 주세요",
+                "A required file is missing. Please reinstall the app"
+            ),
+            path.display()
+        ))
+    }
 }
 
 fn no_window(cmd: &mut Command) -> &mut Command {
@@ -46,7 +57,7 @@ fn no_window(cmd: &mut Command) -> &mut Command {
 
 /// 도우미를 실행하고 표준 출력 JSON 을 돌려준다.
 fn run_json(name: &str, args: &[&str]) -> Result<serde_json::Value, String> {
-    let out = no_window(Command::new(helper(name)?).args(args)).output().map_err(|e| e.to_string())?;
+    let out = no_window(helper_cmd(name)?.args(args)).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
@@ -58,11 +69,10 @@ fn run_json(name: &str, args: &[&str]) -> Result<serde_json::Value, String> {
 /// 도우미를 실행하면서 표준 입력으로 비밀 값을 넘긴다 (명령줄 인자는 ps 에 보이므로 쓰지 않는다).
 fn run_json_stdin(name: &str, args: &[&str], input: &str) -> Result<serde_json::Value, String> {
     use std::io::Write;
-    let mut child = no_window(
-        Command::new(helper(name)?).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()),
-    )
-    .spawn()
-    .map_err(|e| e.to_string())?;
+    let mut child =
+        no_window(helper_cmd(name)?.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()))
+            .spawn()
+            .map_err(|e| e.to_string())?;
     child.stdin.take().expect("piped").write_all(format!("{input}\n").as_bytes()).map_err(|e| e.to_string())?;
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -171,14 +181,10 @@ fn host_start(app: AppHandle, proc: State<HostProc>) -> Result<(), String> {
         return Ok(());
     }
     let mut child = no_window(
-        Command::new(helper("legato-host")?)
-            .arg("serve")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
+        helper_cmd("legato-host")?.arg("serve").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()),
     )
     .spawn()
-    .map_err(|e| format!("호스트 실행 실패: {e}"))?;
+    .map_err(|e| format!("{}: {e}", tr("호스트를 실행하지 못했습니다", "Couldn't start the host")))?;
     pipe_lines(app.clone(), child.stdout.take().expect("piped"), "host", "stdout".into(), None);
     pipe_lines(app, child.stderr.take().expect("piped"), "host", "stderr".into(), None);
     *g = Some(child);
@@ -197,7 +203,10 @@ fn host_stop(proc: State<HostProc>) {
 #[tauri::command]
 fn host_reset_password() -> Result<String, String> {
     let v = run_json("legato-host", &["set-password", "--generate", "--json"])?;
-    v.get("password").and_then(|p| p.as_str()).map(str::to_string).ok_or("비밀번호 생성 실패".into())
+    v.get("password")
+        .and_then(|p| p.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| tr("비밀번호를 만들지 못했습니다", "Couldn't create a password"))
 }
 
 /// 고정 접속 코드를 설정한다. 호스트에는 해시만 저장된다.
@@ -255,13 +264,16 @@ async fn service_change(install: bool) -> Result<(), String> {
         if status.success() {
             Ok(())
         } else {
-            Err("서비스 변경 실패 (관리자 권한을 거부했거나 오류)".into())
+            Err(tr(
+                "서비스를 바꾸지 못했습니다 (관리자 권한을 거부했거나 오류가 났습니다)",
+                "Couldn't change the service (administrator permission was denied or an error occurred)",
+            ))
         }
     }
     #[cfg(not(windows))]
     {
         let _ = install;
-        Err("서비스 모드는 Windows 전용이야".into())
+        Err(tr("서비스 모드는 Windows 전용입니다", "Service mode is Windows only"))
     }
 }
 
@@ -286,8 +298,13 @@ async fn login_agent_change(install: bool) -> Result<(), String> {
             if install { "install" } else { "uninstall" }
         );
         let apple = format!(
-            "do shell script \"{}\" with administrator privileges with prompt \"Legato 가 로그인 화면 접속 설정을 바꾸려고 해.\"",
-            cmd.replace('\\', "\\\\").replace('"', "\\\"")
+            "do shell script \"{}\" with administrator privileges with prompt \"{}\"",
+            cmd.replace('\\', "\\\\").replace('"', "\\\""),
+            if load_settings().lang == "en" {
+                "Legato wants to change the login-window access setting."
+            } else {
+                "Legato 가 로그인 화면 접속 설정을 바꾸려고 합니다."
+            }
         );
         let out = tauri::async_runtime::spawn_blocking(move || Command::new("osascript").args(["-e", &apple]).output())
             .await
@@ -297,13 +314,17 @@ async fn login_agent_change(install: bool) -> Result<(), String> {
             Ok(())
         } else {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            Err(if err.contains("-128") { "취소했어".into() } else { format!("설정 변경 실패: {err}") })
+            Err(if err.contains("-128") {
+                tr("취소했습니다", "Cancelled")
+            } else {
+                format!("{}: {err}", tr("설정을 바꾸지 못했습니다", "Couldn't change the setting"))
+            })
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = install;
-        Err("로그인 화면 에이전트는 macOS 전용이야".into())
+        Err(tr("로그인 화면 접속은 macOS 전용입니다", "Login-window access is macOS only"))
     }
 }
 
@@ -321,7 +342,7 @@ fn saved_code(address: &str) -> Result<Option<String>, String> {
     match keychain(address)?.get_password() {
         Ok(p) => Ok(Some(p)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("키체인 읽기 실패: {e}")),
+        Err(e) => Err(format!("{}: {e}", tr("키체인을 읽지 못했습니다", "Couldn't read the keychain"))),
     }
 }
 
@@ -348,8 +369,12 @@ fn connect(
     windowed: bool,
     accept_new_fingerprint: bool,
 ) -> Result<(), String> {
-    let secret = if use_saved { saved_code(&address)?.ok_or("저장된 접속 코드가 없어")? } else { password };
-    let mut cmd = Command::new(helper("legato-viewer")?);
+    let secret = if use_saved {
+        saved_code(&address)?.ok_or_else(|| tr("저장된 접속 코드가 없습니다", "No saved access code"))?
+    } else {
+        password
+    };
+    let mut cmd = helper_cmd("legato-viewer")?;
     cmd.arg(&address)
         .env("LEGATO_PASSWORD", &secret)
         .stdin(Stdio::null())
@@ -358,10 +383,15 @@ fn connect(
     if windowed {
         cmd.arg("--windowed");
     }
+    if let Some(v) = load_settings().caps_hangul {
+        cmd.arg(format!("--caps-hangul={v}"));
+    }
     if accept_new_fingerprint {
         cmd.arg("--accept-new-fingerprint");
     }
-    let mut child = no_window(&mut cmd).spawn().map_err(|e| format!("뷰어 실행 실패: {e}"))?;
+    let mut child = no_window(&mut cmd)
+        .spawn()
+        .map_err(|e| format!("{}: {e}", tr("뷰어를 실행하지 못했습니다", "Couldn't start the viewer")))?;
     // 고정 접속 코드로 인증에 성공한 경우에만 저장한다 (틀린 값이나 매번 바뀌는 표시 비밀번호는 저장하지 않게).
     let on_connected: Option<OnConnected> = if remember && !use_saved {
         let (app2, addr, id2) = (app.clone(), address.clone(), id.clone());
@@ -369,7 +399,7 @@ fn connect(
             if data["via_access_code"] != true {
                 let _ = app2.emit(
                     "code-saved",
-                    serde_json::json!({ "tag": id2, "address": addr, "error": "표시 비밀번호로 접속해서 저장하지 않았어 (고정 접속 코드만 저장)" }),
+                    serde_json::json!({ "tag": id2, "address": addr, "error": tr("표시 비밀번호로 접속해 저장하지 않았습니다 (고정 접속 코드만 저장합니다)", "Not saved because you connected with the display password (only access codes are saved)") }),
                 );
                 return;
             }
@@ -390,6 +420,16 @@ fn connect(
     Ok(())
 }
 
+/// 앱 버전과 서명 상태 (설정 탭 표시용).
+#[tauri::command]
+fn app_info(app: AppHandle) -> serde_json::Value {
+    serde_json::json!({
+        "version": app.package_info().version.to_string(),
+        // macOS 만 의미 있음: ad-hoc 서명이면 업데이트마다 권한이 초기화된다.
+        "adhoc": cfg!(target_os = "macos") && update::current_is_adhoc(),
+    })
+}
+
 #[tauri::command]
 async fn check_update(app: AppHandle) -> Result<update::UpdateInfo, String> {
     let current = app.package_info().version.to_string();
@@ -401,7 +441,14 @@ async fn check_update(app: AppHandle) -> Result<update::UpdateInfo, String> {
 async fn install_update(app: AppHandle, version: String, force: bool) -> Result<(), String> {
     let (hosted, viewing) = (HOST_SESSIONS.load(Ordering::SeqCst), VIEWERS.load(Ordering::SeqCst));
     if !force && (hosted > 0 || viewing > 0) {
-        return Err(format!("BUSY: 원격 세션이 열려 있어 (이 컴퓨터에 접속 {hosted}, 내가 접속 중 {viewing})"));
+        return Err(format!(
+            "BUSY: {}",
+            if load_settings().lang == "en" {
+                format!("Remote sessions are open (connected to this computer: {hosted}, you are viewing: {viewing})")
+            } else {
+                format!("원격 세션이 열려 있습니다 (이 컴퓨터에 접속 {hosted}, 내가 접속 중 {viewing})")
+            }
+        ));
     }
     let resume_host = host_running(app.state::<HostProc>());
     tauri::async_runtime::spawn_blocking(move || update::install(&version, resume_host))
@@ -421,11 +468,40 @@ async fn install_update(app: AppHandle, version: String, force: bool) -> Result<
 }
 
 /// 앱 설정 (`app.json`).
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 struct AppSettings {
     /// 앱이 켜지면 호스트도 자동으로 켠다 (회사에서 집 Mac 에 접속하는 용도).
     auto_host: bool,
+    /// 화면 언어 (`ko` / `en`). 호스트·뷰어에도 `LEGATO_LANG` 으로 넘긴다.
+    lang: String,
+    /// 앱을 켤 때와 6시간마다 새 버전을 확인한다.
+    auto_update_check: bool,
+    /// 뷰어에서 Caps Lock 을 원격 한/영 키로 쓸지. 없으면 OS 기본값 (macOS 켬).
+    caps_hangul: Option<bool>,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self { auto_host: false, lang: "ko".into(), auto_update_check: true, caps_hangul: None }
+    }
+}
+
+fn save_settings(s: &AppSettings) -> Result<(), String> {
+    let data = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
+    legato_core::paths::write_private(&settings_path()?, data.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// 앱 화면 언어로 문구를 고른다 (`app.json` 의 lang).
+pub(crate) fn tr(ko: &str, en: &str) -> String {
+    if load_settings().lang == "en" { en.to_string() } else { ko.to_string() }
+}
+
+/// 도우미 실행 파일을 띄울 명령. 앱 언어를 넘겨 호스트·뷰어 문구도 같은 언어로 나오게 한다.
+fn helper_cmd(name: &str) -> Result<Command, String> {
+    let mut cmd = Command::new(helper(name)?);
+    cmd.env("LEGATO_LANG", load_settings().lang);
+    Ok(cmd)
 }
 
 fn settings_path() -> Result<PathBuf, String> {
@@ -447,21 +523,40 @@ fn get_settings(app: AppHandle) -> serde_json::Value {
     serde_json::json!({
         "auto_host": s.auto_host,
         "launch_at_login": app.autolaunch().is_enabled().unwrap_or(false),
+        "lang": s.lang,
+        "auto_update_check": s.auto_update_check,
+        "caps_hangul": s.caps_hangul.unwrap_or(cfg!(target_os = "macos")),
+        "os": if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "other" },
     })
 }
 
 #[tauri::command]
-fn set_settings(app: AppHandle, auto_host: Option<bool>, launch_at_login: Option<bool>) -> Result<(), String> {
+fn set_settings(
+    app: AppHandle,
+    auto_host: Option<bool>,
+    launch_at_login: Option<bool>,
+    lang: Option<String>,
+    auto_update_check: Option<bool>,
+    caps_hangul: Option<bool>,
+) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
+    let mut s = load_settings();
     if let Some(v) = auto_host {
-        let mut s = load_settings();
         s.auto_host = v;
-        let data = serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?;
-        legato_core::paths::write_private(&settings_path()?, data.as_bytes()).map_err(|e| e.to_string())?;
     }
+    if let Some(v) = lang {
+        s.lang = if v.starts_with("en") { "en".into() } else { "ko".into() };
+    }
+    if let Some(v) = auto_update_check {
+        s.auto_update_check = v;
+    }
+    if let Some(v) = caps_hangul {
+        s.caps_hangul = Some(v);
+    }
+    save_settings(&s)?;
     if let Some(v) = launch_at_login {
         let al = app.autolaunch();
-        if v { al.enable() } else { al.disable() }.map_err(|e| format!("로그인 시 실행 설정 실패: {e}"))?;
+        if v { al.enable() } else { al.disable() }.map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -537,6 +632,7 @@ fn main() {
             forget_code,
             get_settings,
             set_settings,
+            app_info,
             check_update,
             install_update,
             load_addresses,
