@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result, anyhow, bail};
-use legato_core::auth::{compute_mac, compute_server_mac, derive_key, mac_eq, channel_binding};
+use legato_core::auth::{channel_binding, compute_mac, compute_server_mac, derive_key, mac_eq};
 use legato_core::framing::{read_msg, write_msg};
 use legato_core::known_hosts::KnownHosts;
 use legato_core::protocol::{ClientMsg, DisplayInfo, MAX_AUTH_SLOTS, Os, PROTOCOL_VERSION, ServerMsg};
@@ -23,7 +23,12 @@ pub struct Session {
 
 /// 접속하고 비밀번호로 인증한다.
 /// 처음 보는 호스트는 상호 인증이 끝난 뒤 지문을 기억한다. 기억한 지문과 다르면 거부한다.
-pub async fn connect(addr: SocketAddr, host_key: &str, password: &str, accept_new_fingerprint: bool) -> Result<Session> {
+pub async fn connect(
+    addr: SocketAddr,
+    host_key: &str,
+    password: &str,
+    accept_new_fingerprint: bool,
+) -> Result<Session> {
     let mut known = KnownHosts::load()?;
     let expected = if accept_new_fingerprint { None } else { known.get(host_key).map(str::to_string) };
     let c = legato_core::transport::connect(addr, expected.clone()).await.map_err(|e| {
@@ -39,7 +44,11 @@ pub async fn connect(addr: SocketAddr, host_key: &str, password: &str, accept_ne
     let conn = c.connection;
     let (mut send, mut recv) = conn.open_bi().await.context("제어 스트림 열기 실패")?;
 
-    write_msg(&mut send, &ClientMsg::Hello { version: PROTOCOL_VERSION, client_name: client_name(), client_os: Os::current() }).await?;
+    write_msg(
+        &mut send,
+        &ClientMsg::Hello { version: PROTOCOL_VERSION, client_name: client_name(), client_os: Os::current() },
+    )
+    .await?;
     let challenge: ServerMsg = read_msg(&mut recv).await?.context("호스트가 연결을 닫음")?;
     let (slots, nonce) = match challenge {
         ServerMsg::Challenge { slots, nonce } => (slots, nonce),

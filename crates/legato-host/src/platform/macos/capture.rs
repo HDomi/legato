@@ -70,13 +70,20 @@ impl SCStreamOutputTrait for Handler {
             return;
         }
         let capture_us = legato_core::now_micros();
-        let Some(pb) = sample.pixel_buffer() else { return };
+        let Some(pb) = sample.pixel_buffer() else {
+            return;
+        };
         if pb.plane_count() < 2 || pb.width() < self.width || pb.height() < self.height {
             return;
         }
         // 변환·인코딩은 인코더 스레드에서 한다. 여기서는 버퍼만 넘겨 캡처 콜백을 가볍게 유지한다.
         // 인코더가 바쁘면 이 프레임은 버린다 (지연이 쌓이지 않게).
-        self.sink.push(RawFrame { image: RawImage::PixelBuffer(pb), width: self.width, height: self.height, capture_us });
+        self.sink.push(RawFrame {
+            image: RawImage::PixelBuffer(pb),
+            width: self.width,
+            height: self.height,
+            capture_us,
+        });
     }
 }
 
@@ -140,7 +147,10 @@ pub fn start_capture(opts: &CaptureOptions, sink: FrameSink) -> Result<CaptureHa
 
     let mut stream = SCStream::new(&filter, &config).map_err(|e| anyhow!("캡처 스트림 생성 실패: {e:?}"))?;
     stream
-        .add_output_handler(Handler { sink, width: width as usize, height: height as usize }, SCStreamOutputType::Screen)
+        .add_output_handler(
+            Handler { sink, width: width as usize, height: height as usize },
+            SCStreamOutputType::Screen,
+        )
         .map_err(|e| anyhow!("캡처 핸들러 등록 실패: {e:?}"))?;
     stream.start_capture().map_err(|e| anyhow!("캡처 시작 실패 (화면 기록 권한 확인): {e:?}"))?;
     Ok(CaptureHandle { stream, width, height })

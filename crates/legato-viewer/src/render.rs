@@ -144,11 +144,7 @@ impl Renderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
@@ -236,10 +232,7 @@ impl Renderer {
             _ => return None,
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let vp = self
-            .planes
-            .as_ref()
-            .map(|p| Viewport::fit(self.config.width, self.config.height, p.width, p.height));
+        let vp = self.planes.as_ref().map(|p| Viewport::fit(self.config.width, self.config.height, p.width, p.height));
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -248,7 +241,10 @@ impl Renderer {
                     view: &view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,

@@ -14,8 +14,9 @@ use legato_core::codec::I420Frame;
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+    ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIOutput1, IDXGIOutputDuplication,
@@ -127,7 +128,9 @@ fn capture_loop(display_id: u32, fps: u32, width: usize, height: usize, sink: Fr
                 continue;
             }
             let capture_us = legato_core::now_micros();
-            let ok = res.and_then(|r| r.cast::<ID3D11Texture2D>().ok()).is_some_and(|tex| copy_frame(&mut d, &tex, &mut frame));
+            let ok = res
+                .and_then(|r| r.cast::<ID3D11Texture2D>().ok())
+                .is_some_and(|tex| copy_frame(&mut d, &tex, &mut frame));
             let _ = unsafe { d.dup.ReleaseFrame() };
             if ok {
                 last_sent = Instant::now();
@@ -164,7 +167,9 @@ fn copy_frame(d: &mut Dup, tex: &ID3D11Texture2D, frame: &mut I420Frame) -> bool
             }
             d.staging = staging;
         }
-        let Some(staging) = d.staging.clone() else { return false };
+        let Some(staging) = d.staging.clone() else {
+            return false;
+        };
         d.context.CopyResource(&staging, tex);
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         if d.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).is_err() {

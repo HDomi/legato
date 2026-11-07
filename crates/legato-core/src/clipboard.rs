@@ -17,10 +17,7 @@ impl ClipboardSync {
     /// 동기화 스레드를 시작한다. 시작 시점의 클립보드 내용은 보내지 않는다 (접속하자마자 내용이 넘어가지 않게).
     pub fn start(on_change: impl Fn(String) + Send + 'static) -> Option<Self> {
         let (tx, rx) = channel::<String>();
-        std::thread::Builder::new()
-            .name("legato-clipboard".into())
-            .spawn(move || run(rx, on_change))
-            .ok()?;
+        std::thread::Builder::new().name("legato-clipboard".into()).spawn(move || run(rx, on_change)).ok()?;
         Some(Self { tx })
     }
 

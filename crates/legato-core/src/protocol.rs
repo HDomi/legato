@@ -73,12 +73,7 @@ pub enum ServerMsg {
     /// 인증 실패. 이 메시지 뒤 연결은 닫힌다.
     AuthFailed { reason: String },
     /// 영상 스트림 시작. 해상도는 실제 인코딩 크기, `encoder` 는 사람이 읽는 인코더 이름.
-    StreamStarted {
-        display_id: u32,
-        width: u32,
-        height: u32,
-        encoder: String,
-    },
+    StreamStarted { display_id: u32, width: u32, height: u32, encoder: String },
     /// 자동 화질 조절로 단계가 바뀜 (뷰어 메뉴 표시용).
     QualityChanged { display_id: u32, quality: Quality },
     /// 호스트 쪽 클립보드 텍스트가 바뀜.
@@ -136,12 +131,25 @@ pub enum MouseButton {
 /// 입력 이벤트. 좌표는 디스플레이 기준 0.0~1.0 정규화 값이라 해상도·배율과 무관하다.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InputEvent {
-    MouseMove { x: f32, y: f32 },
-    MouseButton { button: MouseButton, down: bool },
+    MouseMove {
+        x: f32,
+        y: f32,
+    },
+    MouseButton {
+        button: MouseButton,
+        down: bool,
+    },
     /// 스크롤. `pixels` 가 true 면 픽셀 단위(트랙패드), false 면 줄 단위(휠).
-    Scroll { dx: f32, dy: f32, pixels: bool },
+    Scroll {
+        dx: f32,
+        dy: f32,
+        pixels: bool,
+    },
     /// 키 입력. `code` 는 W3C `KeyboardEvent.code` 이름 (예: "KeyA", "ShiftLeft").
-    Key { code: String, down: bool },
+    Key {
+        code: String,
+        down: bool,
+    },
     /// 뷰어 창이 포커스를 잃을 때 눌려 있던 키를 모두 뗀다.
     ReleaseAll,
     /// Windows 보안 주의 시퀀스 (Ctrl+Alt+Del). 일반 키 입력으로는 보낼 수 없어 따로 둔다.
@@ -190,4 +198,3 @@ impl Quality {
         }
     }
 }
-

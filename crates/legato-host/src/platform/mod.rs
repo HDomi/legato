@@ -150,6 +150,11 @@ pub fn create_encoder(width: usize, height: usize, bitrate: u32, fps: u32) -> Re
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::login_agent;
+/// 진단용 한/영 전환 (현재 스레드에서 바로).
+#[cfg(target_os = "macos")]
+pub fn macos_ime_toggle() -> Option<String> {
+    macos::ime::toggle_korean()
+}
 #[cfg(target_os = "macos")]
 pub use macos::{
     CaptureHandle, Injector, accessibility_trusted, list_displays, prevent_sleep, request_accessibility,
@@ -170,6 +175,18 @@ pub use self::windows::{
 mod unsupported;
 #[cfg(not(any(target_os = "macos", windows)))]
 pub use unsupported::*;
+
+/// 서버를 돌리는 동안 메인 스레드가 할 일을 정한다. macOS 는 메인 run loop 를 돌린다 (입력 소스 전환용).
+pub fn run_server(work: impl FnOnce() -> anyhow::Result<()> + Send + 'static) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::mainloop::run_with_main_loop(work)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        work()
+    }
+}
 
 /// OS 별 시작 준비 (Windows: DPI 인식). 다른 OS 는 할 일 없음.
 #[cfg(not(windows))]

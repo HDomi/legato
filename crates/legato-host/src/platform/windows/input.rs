@@ -48,7 +48,9 @@ fn send(inputs: &[INPUT]) {
 fn mouse(dx: i32, dy: i32, data: i32, flags: MOUSE_EVENT_FLAGS) -> INPUT {
     INPUT {
         r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 { mi: MOUSEINPUT { dx, dy, mouseData: data as u32, dwFlags: flags, time: 0, dwExtraInfo: 0 } },
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT { dx, dy, mouseData: data as u32, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+        },
     }
 }
 
@@ -63,7 +65,13 @@ fn key(scan: u16, extended: bool, down: bool) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
-            ki: KEYBDINPUT { wVk: VIRTUAL_KEY(0), wScan: scan, dwFlags: KEYBD_EVENT_FLAGS(flags.0), time: 0, dwExtraInfo: 0 },
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: scan,
+                dwFlags: KEYBD_EVENT_FLAGS(flags.0),
+                time: 0,
+                dwExtraInfo: 0,
+            },
         },
     }
 }
@@ -157,6 +165,26 @@ impl Injector {
     }
 
     fn key(&mut self, code: &str, down: bool) -> Result<()> {
+        // 한/영(VK_HANGUL)·한자(VK_HANJA)는 IME 가 가상 키로 받는다.
+        let vk = match code {
+            "Lang1" => Some(0x15u16),
+            "Lang2" => Some(0x19u16),
+            _ => None,
+        };
+        if let Some(vk) = vk {
+            let mut flags = KEYBD_EVENT_FLAGS(0);
+            if !down {
+                flags |= KEYEVENTF_KEYUP;
+            }
+            let input = INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+                },
+            };
+            send(&[input]);
+            return Ok(());
+        }
         let Some((scan, ext)) = to_scancode(code) else {
             tracing::debug!("매핑 없는 키: {code}");
             return Ok(());
@@ -173,13 +201,15 @@ impl Injector {
     }
 
     fn release_all(&mut self) -> Result<()> {
-        let keys: Vec<INPUT> = std::mem::take(&mut self.pressed_keys).into_iter().map(|(s, e)| key(s, e, false)).collect();
+        let keys: Vec<INPUT> =
+            std::mem::take(&mut self.pressed_keys).into_iter().map(|(s, e)| key(s, e, false)).collect();
         if !keys.is_empty() {
             send(&keys);
         }
-        for (i, b) in [MouseButton::Left, MouseButton::Right, MouseButton::Middle, MouseButton::Back, MouseButton::Forward]
-            .into_iter()
-            .enumerate()
+        for (i, b) in
+            [MouseButton::Left, MouseButton::Right, MouseButton::Middle, MouseButton::Back, MouseButton::Forward]
+                .into_iter()
+                .enumerate()
         {
             if self.buttons[i] {
                 self.mouse_button(b, false)?;

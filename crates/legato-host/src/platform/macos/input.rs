@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow};
 use core_graphics::display::CGDisplay;
 use core_graphics::event::{
-    CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, EventField,
-    ScrollEventUnit,
+    CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, EventField, ScrollEventUnit,
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
@@ -91,7 +90,8 @@ impl Injector {
         } else {
             (CGEventType::MouseMoved, CGMouseButton::Left)
         };
-        let ev = CGEvent::new_mouse_event(Self::source()?, ty, self.pos, btn).map_err(|_| anyhow!("마우스 이벤트 생성 실패"))?;
+        let ev = CGEvent::new_mouse_event(Self::source()?, ty, self.pos, btn)
+            .map_err(|_| anyhow!("마우스 이벤트 생성 실패"))?;
         self.post(ev);
         Ok(())
     }
@@ -135,7 +135,8 @@ impl Injector {
         } else {
             self.last_click.map(|(_, _, _, n)| n).unwrap_or(1)
         };
-        let ev = CGEvent::new_mouse_event(Self::source()?, ty, self.pos, btn).map_err(|_| anyhow!("마우스 이벤트 생성 실패"))?;
+        let ev = CGEvent::new_mouse_event(Self::source()?, ty, self.pos, btn)
+            .map_err(|_| anyhow!("마우스 이벤트 생성 실패"))?;
         ev.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, clicks);
         if idx >= 2 {
             // 가운데·앞·뒤 버튼은 버튼 번호 필드로 구분한다.
@@ -157,6 +158,13 @@ impl Injector {
     }
 
     fn key(&mut self, code: &str, down: bool) -> Result<()> {
+        // 한/영 키: macOS 는 키 하나로 입력 소스를 바꾸지 않으므로 직접 전환한다 (누를 때 한 번).
+        if code == "Lang1" {
+            if down {
+                super::toggle_ime();
+            }
+            return Ok(());
+        }
         let Some(kc) = to_mac_keycode(code) else {
             tracing::debug!("매핑 없는 키: {code}");
             return Ok(());
@@ -188,12 +196,14 @@ impl Injector {
 
     fn release_all(&mut self) -> Result<()> {
         for kc in std::mem::take(&mut self.pressed_keys) {
-            let ev = CGEvent::new_keyboard_event(Self::source()?, kc, false).map_err(|_| anyhow!("키 이벤트 생성 실패"))?;
+            let ev =
+                CGEvent::new_keyboard_event(Self::source()?, kc, false).map_err(|_| anyhow!("키 이벤트 생성 실패"))?;
             self.post(ev);
         }
-        for (idx, b) in [MouseButton::Left, MouseButton::Right, MouseButton::Middle, MouseButton::Back, MouseButton::Forward]
-            .into_iter()
-            .enumerate()
+        for (idx, b) in
+            [MouseButton::Left, MouseButton::Right, MouseButton::Middle, MouseButton::Back, MouseButton::Forward]
+                .into_iter()
+                .enumerate()
         {
             if self.buttons[idx] {
                 self.mouse_button(b, false)?;
@@ -203,7 +213,8 @@ impl Injector {
         let caps = self.flags & 0x0001_0000;
         if self.flags & !caps != 0 {
             self.flags = caps;
-            let ev = CGEvent::new_keyboard_event(Self::source()?, 0x38, false).map_err(|_| anyhow!("키 이벤트 생성 실패"))?;
+            let ev = CGEvent::new_keyboard_event(Self::source()?, 0x38, false)
+                .map_err(|_| anyhow!("키 이벤트 생성 실패"))?;
             ev.set_type(CGEventType::FlagsChanged);
             self.post(ev);
         }

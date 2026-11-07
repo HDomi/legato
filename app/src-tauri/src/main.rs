@@ -63,12 +63,7 @@ fn run_json_stdin(name: &str, args: &[&str], input: &str) -> Result<serde_json::
     )
     .spawn()
     .map_err(|e| e.to_string())?;
-    child
-        .stdin
-        .take()
-        .expect("piped")
-        .write_all(format!("{input}\n").as_bytes())
-        .map_err(|e| e.to_string())?;
+    child.stdin.take().expect("piped").write_all(format!("{input}\n").as_bytes()).map_err(|e| e.to_string())?;
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().trim_start_matches("Error: ").to_string());
@@ -257,7 +252,11 @@ async fn service_change(install: bool) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-        if status.success() { Ok(()) } else { Err("서비스 변경 실패 (관리자 권한을 거부했거나 오류)".into()) }
+        if status.success() {
+            Ok(())
+        } else {
+            Err("서비스 변경 실패 (관리자 권한을 거부했거나 오류)".into())
+        }
     }
     #[cfg(not(windows))]
     {
@@ -349,11 +348,7 @@ fn connect(
     windowed: bool,
     accept_new_fingerprint: bool,
 ) -> Result<(), String> {
-    let secret = if use_saved {
-        saved_code(&address)?.ok_or("저장된 접속 코드가 없어")?
-    } else {
-        password
-    };
+    let secret = if use_saved { saved_code(&address)?.ok_or("저장된 접속 코드가 없어")? } else { password };
     let mut cmd = Command::new(helper("legato-viewer")?);
     cmd.arg(&address)
         .env("LEGATO_PASSWORD", &secret)
@@ -503,7 +498,10 @@ fn save_addresses(entries: Vec<Entry>) -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         // 로그인 시 실행되면 `--autostart` 인자가 붙는다 (창을 최소화해서 시작).
-        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .manage(HostProc::default())
         .setup(|app| {
             // 업데이트 직후 다시 열렸으면 그 전에 켜져 있던 호스트를 다시 켠다.

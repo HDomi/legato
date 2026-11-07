@@ -27,8 +27,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{PCWSTR, PWSTR};
 use windows_service::service::{
-    ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode, ServiceInfo, ServiceStartType,
-    ServiceState, ServiceStatus, ServiceType,
+    ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode, ServiceInfo,
+    ServiceStartType, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -74,10 +74,15 @@ fn quote(arg: &OsStr) -> OsString {
 pub fn install(config_dir: &Path, port: u16) -> Result<()> {
     let exe = std::env::current_exe().context("실행 파일 경로를 알 수 없음")?;
     let log = config_dir.join("service.log");
-    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)
-        .context("서비스 관리자를 열 수 없어 (관리자 권한으로 실행해줘)")?;
+    let manager = ServiceManager::local_computer(
+        None::<&str>,
+        ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
+    )
+    .context("서비스 관리자를 열 수 없어 (관리자 권한으로 실행해줘)")?;
     // 이미 있으면 지우고 다시 만든다 (경로·인자가 바뀌었을 수 있음).
-    if let Ok(old) = manager.open_service(SERVICE_NAME, ServiceAccess::STOP | ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS) {
+    if let Ok(old) =
+        manager.open_service(SERVICE_NAME, ServiceAccess::STOP | ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS)
+    {
         let _ = old.stop();
         let _ = old.delete();
         std::thread::sleep(Duration::from_secs(1));
@@ -104,7 +109,8 @@ pub fn install(config_dir: &Path, port: u16) -> Result<()> {
     let service = manager
         .create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::QUERY_STATUS)
         .context("서비스 만들기 실패")?;
-    let _ = service.set_description("Legato 원격 접속을 받는다. 로그인 화면 · UAC 확인 창까지 원격으로 볼 수 있게 한다.");
+    let _ =
+        service.set_description("Legato 원격 접속을 받는다. 로그인 화면 · UAC 확인 창까지 원격으로 볼 수 있게 한다.");
 
     // Ctrl+Alt+Del(SendSAS)을 서비스가 보낼 수 있게 허용 (1 = 서비스).
     let _ = std::process::Command::new("reg")
@@ -121,7 +127,9 @@ pub fn install(config_dir: &Path, port: u16) -> Result<()> {
         ])
         .status();
     // 방화벽: 이 실행 파일의 UDP 수신 허용.
-    let _ = std::process::Command::new("netsh").args(["advfirewall", "firewall", "delete", "rule", &format!("name={FIREWALL_RULE}")]).status();
+    let _ = std::process::Command::new("netsh")
+        .args(["advfirewall", "firewall", "delete", "rule", &format!("name={FIREWALL_RULE}")])
+        .status();
     let _ = std::process::Command::new("netsh")
         .args([
             "advfirewall",
@@ -150,13 +158,17 @@ pub fn uninstall() -> Result<()> {
         .context("서비스가 설치돼 있지 않거나 권한이 없어")?;
     let _ = service.stop();
     service.delete().context("서비스 지우기 실패")?;
-    let _ = std::process::Command::new("netsh").args(["advfirewall", "firewall", "delete", "rule", &format!("name={FIREWALL_RULE}")]).status();
+    let _ = std::process::Command::new("netsh")
+        .args(["advfirewall", "firewall", "delete", "rule", &format!("name={FIREWALL_RULE}")])
+        .status();
     Ok(())
 }
 
 /// (설치됨, 실행 중)
 pub fn status() -> (bool, bool) {
-    let Ok(manager) = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) else { return (false, false) };
+    let Ok(manager) = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) else {
+        return (false, false);
+    };
     match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
         Ok(s) => (true, s.query_status().is_ok_and(|st| st.current_state == ServiceState::Running)),
         Err(_) => (false, false),
@@ -167,7 +179,8 @@ define_windows_service!(ffi_service_main, service_main);
 
 /// 서비스 관리자가 부르는 진입점으로 넘긴다. `service run` 에서만 쓴다.
 pub fn run_dispatcher() -> Result<()> {
-    service_dispatcher::start(SERVICE_NAME, ffi_service_main).context("서비스 디스패처 시작 실패 (서비스 관리자가 실행해야 함)")?;
+    service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+        .context("서비스 디스패처 시작 실패 (서비스 관리자가 실행해야 함)")?;
     Ok(())
 }
 
@@ -277,7 +290,14 @@ fn spawn_helper(exe: &Path, log_dir: &Path, session: u32) -> Result<Helper> {
         )
         .context("서비스 토큰 열기 실패")?;
         let mut primary = HANDLE::default();
-        let dup = DuplicateTokenEx(token, TOKEN_ACCESS_MASK(0x0200_0000), None, SecurityIdentification, TokenPrimary, &mut primary);
+        let dup = DuplicateTokenEx(
+            token,
+            TOKEN_ACCESS_MASK(0x0200_0000),
+            None,
+            SecurityIdentification,
+            TokenPrimary,
+            &mut primary,
+        );
         let _ = CloseHandle(token);
         dup.context("토큰 복제 실패")?;
         let sid = session;
@@ -329,7 +349,10 @@ mod tests {
     #[test]
     fn 인자_따옴표() {
         assert_eq!(quote(OsStr::new("serve")), "serve");
-        assert_eq!(quote(OsStr::new(r"C:\Program Files\Legato\legato-host.exe")), r#""C:\Program Files\Legato\legato-host.exe""#);
+        assert_eq!(
+            quote(OsStr::new(r"C:\Program Files\Legato\legato-host.exe")),
+            r#""C:\Program Files\Legato\legato-host.exe""#
+        );
         assert_eq!(quote(OsStr::new(r"C:\a b\")), r#""C:\a b\\""#);
     }
 }

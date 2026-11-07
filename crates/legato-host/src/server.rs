@@ -1,7 +1,7 @@
 //! 접속 수락, 인증, 영상 송출, 입력 처리.
 
-use std::net::SocketAddr;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -107,9 +107,15 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         tracing::warn!("{peer} 잠김 상태에서 접속 시도 ({}초 남음)", remaining.as_secs());
         // 뷰어가 이유를 알 수 있게 메시지를 보내고 닫는다. 비밀번호 확인은 아예 하지 않는다.
         let _ = tokio::time::timeout(Duration::from_secs(5), read_msg::<_, ClientMsg>(&mut recv)).await;
-        write_msg(&mut send, &ServerMsg::Error {
-            message: format!("비밀번호를 너무 많이 틀려서 잠겼어. {}초 뒤에 다시 시도해", remaining.as_secs().max(1)),
-        })
+        write_msg(
+            &mut send,
+            &ServerMsg::Error {
+                message: format!(
+                    "비밀번호를 너무 많이 틀려서 잠겼어. {}초 뒤에 다시 시도해",
+                    remaining.as_secs().max(1)
+                ),
+            },
+        )
         .await?;
         send.finish().ok();
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -122,9 +128,17 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         .await
         .context("Hello 대기 시간 초과")??
         .context("Hello 전에 스트림 종료")?;
-    let ClientMsg::Hello { version, client_name, client_os } = hello else { bail!("첫 메시지가 Hello 가 아님") };
+    let ClientMsg::Hello { version, client_name, client_os } = hello else {
+        bail!("첫 메시지가 Hello 가 아님")
+    };
     if version != PROTOCOL_VERSION {
-        write_msg(&mut send, &ServerMsg::Error { message: format!("프로토콜 버전 불일치 (호스트 {PROTOCOL_VERSION}, 뷰어 {version})") }).await?;
+        write_msg(
+            &mut send,
+            &ServerMsg::Error {
+                message: format!("프로토콜 버전 불일치 (호스트 {PROTOCOL_VERSION}, 뷰어 {version})")
+            },
+        )
+        .await?;
         send.finish().ok();
         bail!("프로토콜 버전 불일치");
     }
@@ -187,14 +201,17 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
             bail!(message);
         }
     };
-    write_msg(&mut send, &ServerMsg::AuthOk {
-        slot: slot as u32,
-        via_access_code,
-        server_mac: records[slot].server_proof(&nonce, &binding),
-        host_name: state.host_name.clone(),
-        host_os: Os::current(),
-        displays: displays.clone(),
-    })
+    write_msg(
+        &mut send,
+        &ServerMsg::AuthOk {
+            slot: slot as u32,
+            via_access_code,
+            server_mac: records[slot].server_proof(&nonce, &binding),
+            host_name: state.host_name.clone(),
+            host_os: Os::current(),
+            displays: displays.clone(),
+        },
+    )
     .await?;
     let how = if via_access_code { "고정 접속 코드" } else { "표시 비밀번호" };
     tracing::info!("{peer} ({client_name}, {client_os:?}) 인증 성공 ({how})");
@@ -236,7 +253,8 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
 
     if !platform::accessibility_trusted() {
         let _ = out_tx.send(ServerMsg::Notice {
-            message: "호스트에 입력 권한(손쉬운 사용)이 없어서 마우스·키보드 조작이 안 돼. 호스트에서 권한을 허용해줘".into(),
+            message: "호스트에 입력 권한(손쉬운 사용)이 없어서 마우스·키보드 조작이 안 돼. 호스트에서 권한을 허용해줘"
+                .into(),
         });
     }
 
@@ -477,7 +495,8 @@ impl Pipeline {
         let dropped = sink.dropped.clone();
         let opts = CaptureOptions { display_id, max_width: params.max_width, fps: params.fps };
         let capture = platform::start_capture(&opts, sink)?;
-        let mut enc = platform::create_encoder(capture.width as usize, capture.height as usize, params.bitrate, params.fps)?;
+        let mut enc =
+            platform::create_encoder(capture.width as usize, capture.height as usize, params.bitrate, params.fps)?;
         let encoder = enc.name();
         let stop = Arc::new(AtomicBool::new(false));
         let keyframe = Arc::new(AtomicBool::new(false));
@@ -499,7 +518,9 @@ impl Pipeline {
                     let raw = match raw_rx.recv_timeout(Duration::from_millis(200)) {
                         Ok(r) => r,
                         Err(RecvTimeoutError::Timeout) => {
-                            if keyframe.load(Ordering::SeqCst) && let Some(prev) = last.take() {
+                            if keyframe.load(Ordering::SeqCst)
+                                && let Some(prev) = last.take()
+                            {
                                 prev
                             } else {
                                 continue;

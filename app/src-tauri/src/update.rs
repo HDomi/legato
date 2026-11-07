@@ -39,11 +39,7 @@ pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
 }
 
 fn asset_name(version: &str) -> String {
-    if cfg!(windows) {
-        format!("Legato_{version}_x64-setup.exe")
-    } else {
-        format!("Legato-{version}-arm64-mac.zip")
-    }
+    if cfg!(windows) { format!("Legato_{version}_x64-setup.exe") } else { format!("Legato-{version}-arm64-mac.zip") }
 }
 
 fn get(url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
@@ -233,7 +229,11 @@ fn platform_install(dir: &Path, zip: &Path, version: &str, resume_host: bool) ->
     if plist_value(&new_app, "CFBundleShortVersionString").as_deref() != Some(version) {
         return Err("받은 앱의 버전이 릴리스와 달라".into());
     }
-    let ok = Command::new("codesign").args(["--verify", "--deep", "--strict"]).arg(&new_app).status().map_err(|e| e.to_string())?;
+    let ok = Command::new("codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(&new_app)
+        .status()
+        .map_err(|e| e.to_string())?;
     if !ok.success() {
         return Err("받은 앱의 서명 검증 실패".into());
     }
@@ -241,7 +241,12 @@ fn platform_install(dir: &Path, zip: &Path, version: &str, resume_host: bool) ->
     if let Some(req) = designated_requirement(&current)
         && !req.contains("cdhash")
     {
-        let st = Command::new("codesign").arg("--verify").arg(format!("-R={req}")).arg(&new_app).status().map_err(|e| e.to_string())?;
+        let st = Command::new("codesign")
+            .arg("--verify")
+            .arg(format!("-R={req}"))
+            .arg(&new_app)
+            .status()
+            .map_err(|e| e.to_string())?;
         if !st.success() {
             return Err("받은 앱이 지금 앱과 다른 인증서로 서명돼 있어서 설치하지 않았어".into());
         }

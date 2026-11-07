@@ -1,18 +1,30 @@
 //! macOS 구현.
 
 mod capture;
+pub mod ime;
 mod input;
 mod keymap;
 pub mod login_agent;
+pub mod mainloop;
 mod vt;
 
 use anyhow::{Result, bail};
 use legato_core::codec::EncodedFrame;
 
-pub use capture::{CaptureHandle, list_displays, pixel_buffer_to_i420, request_screen_capture, screen_capture_allowed, start_capture};
+pub use capture::{
+    CaptureHandle, list_displays, pixel_buffer_to_i420, request_screen_capture, screen_capture_allowed, start_capture,
+};
 pub use input::{Injector, accessibility_trusted, request_accessibility};
 
 use super::{RawFrame, RawImage, VideoEncoder};
+
+/// 한/영 전환 (메인 스레드에서 실행).
+pub fn toggle_ime() {
+    mainloop::run_on_main(|| match ime::toggle_korean() {
+        Some(id) => tracing::info!("입력 소스 전환: {id}"),
+        None => tracing::warn!("입력 소스를 바꾸지 못함 (한국어 입력기가 없을 수 있음)"),
+    });
+}
 
 /// VideoToolbox 하드웨어 인코더.
 pub struct HardwareEncoder(vt::VtEncoder);
@@ -48,8 +60,5 @@ pub fn wake_display() {
 /// 호스트가 살아 있는 동안 시스템 유휴 잠자기를 막는다 (디스플레이는 꺼져도 됨).
 /// 잠들면 원격 접속을 받을 수 없어서 필요하다. 반환된 프로세스는 호스트가 끝나면 같이 끝난다.
 pub fn prevent_sleep() -> Option<std::process::Child> {
-    std::process::Command::new("/usr/bin/caffeinate")
-        .args(["-i", "-w", &std::process::id().to_string()])
-        .spawn()
-        .ok()
+    std::process::Command::new("/usr/bin/caffeinate").args(["-i", "-w", &std::process::id().to_string()]).spawn().ok()
 }

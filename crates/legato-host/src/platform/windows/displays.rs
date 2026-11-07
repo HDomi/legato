@@ -24,7 +24,12 @@ pub fn outputs() -> Result<Vec<Output>> {
             if let Ok(desc) = unsafe { output.GetDesc() }
                 && desc.AttachedToDesktop.as_bool()
             {
-                list.push(Output { id: ai * 100 + oi + 1, adapter: adapter.clone(), output, rect: desc.DesktopCoordinates });
+                list.push(Output {
+                    id: ai * 100 + oi + 1,
+                    adapter: adapter.clone(),
+                    output,
+                    rect: desc.DesktopCoordinates,
+                });
             }
             oi += 1;
         }

@@ -70,6 +70,9 @@ struct Cli {
     /// 클립보드를 공유하지 않는다.
     #[arg(long)]
     no_clipboard: bool,
+    /// Caps Lock 을 원격 한/영 전환 키로 쓸지 (기본: macOS 는 켬, 그 밖은 끔).
+    #[arg(long)]
+    caps_hangul: Option<bool>,
     /// 호스트 인증서 지문이 바뀌었어도 새 지문을 받아들인다.
     #[arg(long)]
     accept_new_fingerprint: bool,
@@ -85,6 +88,9 @@ struct Cli {
     /// 진단용: headless 에서 원격 마우스를 이 정규화 좌표(x,y)로 옮긴다 (입력 주입 확인).
     #[arg(long, hide = true, value_parser = parse_point)]
     probe_mouse: Option<(f32, f32)>,
+    /// 진단용: headless 에서 이 키(W3C 이름)를 한 번 눌렀다 뗀다.
+    #[arg(long, hide = true)]
+    probe_key: Option<String>,
 }
 
 fn parse_point(s: &str) -> Result<(f32, f32), String> {
@@ -139,7 +145,8 @@ fn main() {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,quinn=warn,wgpu=warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,quinn=warn,wgpu=warn".into()),
         )
         .init();
     if let Err(e) = run(Cli::parse()) {
@@ -165,7 +172,10 @@ fn run(cli: Cli) -> Result<()> {
     };
     for id in &open {
         if !session.displays.iter().any(|d| d.id == *id) {
-            bail!("디스플레이 {id} 없음 (호스트 디스플레이: {:?})", session.displays.iter().map(|d| d.id).collect::<Vec<_>>());
+            bail!(
+                "디스플레이 {id} 없음 (호스트 디스플레이: {:?})",
+                session.displays.iter().map(|d| d.id).collect::<Vec<_>>()
+            );
         }
     }
     if open.is_empty() {
@@ -223,6 +233,11 @@ fn run(cli: Cli) -> Result<()> {
         let display_id = open[0];
         if let Some((x, y)) = cli.probe_mouse {
             ctl_tx.send(ClientMsg::Input { display_id, event: InputEvent::MouseMove { x, y } }).ok();
+        }
+        if let Some(code) = &cli.probe_key {
+            for down in [true, false] {
+                ctl_tx.send(ClientMsg::Input { display_id, event: InputEvent::Key { code: code.clone(), down } }).ok();
+            }
         }
         let r = run_headless(&rt, conn, recv, routes, ctl_tx, display_id, cli.quality.into(), cli.frames, cli.dump);
         // 종료 신호가 호스트에 전달될 때까지 잠깐 기다린다 (안 그러면 호스트가 시간 초과까지 세션을 붙잡음).
@@ -283,6 +298,7 @@ fn run(cli: Cli) -> Result<()> {
         quality: cli.quality.into(),
         swap,
         clipboard_on,
+        caps_hangul: cli.caps_hangul.unwrap_or(cfg!(target_os = "macos")),
     };
     let mut app = App::new(cfg, ctl_tx, routes, proxy);
     event_loop.run_app(&mut app)?;

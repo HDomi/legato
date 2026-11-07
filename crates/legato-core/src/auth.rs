@@ -102,7 +102,12 @@ pub fn channel_binding(conn: &quinn::Connection) -> anyhow::Result<[u8; 32]> {
 
 /// 슬롯 목록과 뷰어 응답을 비교해 맞은 슬롯 번호를 돌려준다.
 /// 응답 시간으로 어느 슬롯인지 새지 않게 모든 슬롯을 끝까지 검사한다.
-pub fn match_slot(records: &[&PasswordRecord], nonce: &[u8; 32], binding: &[u8; 32], macs: &[[u8; 32]]) -> Option<usize> {
+pub fn match_slot(
+    records: &[&PasswordRecord],
+    nonce: &[u8; 32],
+    binding: &[u8; 32],
+    macs: &[[u8; 32]],
+) -> Option<usize> {
     if macs.len() != records.len() {
         return None;
     }
@@ -127,14 +132,8 @@ pub fn new_nonce() -> [u8; 32] {
 pub fn generate_password() -> String {
     const ALPHABET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
     let mut rng = rand::rng();
-    let chars: Vec<char> = (0..12)
-        .map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char)
-        .collect();
-    chars
-        .chunks(4)
-        .map(|c| c.iter().collect::<String>())
-        .collect::<Vec<_>>()
-        .join("-")
+    let chars: Vec<char> = (0..12).map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char).collect();
+    chars.chunks(4).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join("-")
 }
 
 /// IP 별 인증 실패 횟수를 세서 무차별 대입을 막는다.

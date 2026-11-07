@@ -19,7 +19,8 @@ impl HostIdentity {
     /// 파일에서 읽고, 없으면 새로 만들어 저장한다.
     pub fn load_or_create(path: &Path) -> Result<Self> {
         if path.exists() {
-            let s = std::fs::read_to_string(path).with_context(|| format!("신원 파일 읽기 실패: {}", path.display()))?;
+            let s =
+                std::fs::read_to_string(path).with_context(|| format!("신원 파일 읽기 실패: {}", path.display()))?;
             return serde_json::from_str(&s).context("신원 파일 형식 오류");
         }
         let id = Self::generate()?;
@@ -29,12 +30,8 @@ impl HostIdentity {
 
     /// 새 자체 서명 인증서를 만든다. 이름 검증은 하지 않으므로 SAN 은 고정값.
     pub fn generate() -> Result<Self> {
-        let ck = rcgen::generate_simple_self_signed(vec!["legato.local".to_string()])
-            .context("인증서 생성 실패")?;
-        Ok(Self {
-            cert_der: ck.cert.der().to_vec(),
-            key_der: ck.signing_key.serialize_der(),
-        })
+        let ck = rcgen::generate_simple_self_signed(vec!["legato.local".to_string()]).context("인증서 생성 실패")?;
+        Ok(Self { cert_der: ck.cert.der().to_vec(), key_der: ck.signing_key.serialize_der() })
     }
 
     pub fn fingerprint(&self) -> String {

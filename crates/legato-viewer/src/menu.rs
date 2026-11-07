@@ -9,6 +9,7 @@ pub const ID_DISCONNECT: &str = "disconnect";
 pub const ID_CAD: &str = "cad";
 pub const ID_SWAP: &str = "swap";
 pub const ID_CLIPBOARD: &str = "clipboard";
+pub const ID_CAPS_HANGUL: &str = "caps_hangul";
 pub const ID_QUALITY_PREFIX: &str = "quality:";
 pub const ID_DISPLAY_PREFIX: &str = "display:";
 
@@ -22,12 +23,20 @@ pub struct ViewerMenu {
     pub menu: Menu,
     pub swap: CheckMenuItem,
     pub clipboard: CheckMenuItem,
+    pub caps_hangul: CheckMenuItem,
     pub qualities: Vec<(Quality, CheckMenuItem)>,
     pub displays: Vec<(u32, CheckMenuItem)>,
 }
 
 impl ViewerMenu {
-    pub fn new(host_name: &str, quality: Quality, swap: bool, displays: &[DisplayInfo], open: &[u32]) -> muda::Result<Self> {
+    pub fn new(
+        host_name: &str,
+        quality: Quality,
+        swap: bool,
+        caps_hangul: bool,
+        displays: &[DisplayInfo],
+        open: &[u32],
+    ) -> muda::Result<Self> {
         let menu = Menu::new();
         // macOS: 첫 하위 메뉴가 앱 메뉴 자리다.
         let app = Submenu::with_items(
@@ -41,6 +50,7 @@ impl ViewerMenu {
         )?;
         let swap_item = CheckMenuItem::with_id(ID_SWAP, "Cmd ↔ Ctrl 바꾸기", true, swap, None);
         let clip_item = CheckMenuItem::with_id(ID_CLIPBOARD, "클립보드 공유", true, true, None);
+        let caps_item = CheckMenuItem::with_id(ID_CAPS_HANGUL, "Caps Lock 을 한/영 키로", true, caps_hangul, None);
         let quality_menu = Submenu::new("화질", true);
         let mut qualities = Vec::new();
         for q in QUALITIES {
@@ -52,7 +62,8 @@ impl ViewerMenu {
         let mut display_items = Vec::new();
         for (i, d) in displays.iter().enumerate() {
             let label = format!("{} ({}x{}){}", d.name, d.width, d.height, if d.primary { " · 주" } else { "" });
-            let item = CheckMenuItem::with_id(format!("{ID_DISPLAY_PREFIX}{}", d.id), label, true, open.contains(&d.id), None);
+            let item =
+                CheckMenuItem::with_id(format!("{ID_DISPLAY_PREFIX}{}", d.id), label, true, open.contains(&d.id), None);
             display_menu.append(&item)?;
             display_items.push((d.id, item));
             let _ = i;
@@ -67,11 +78,19 @@ impl ViewerMenu {
                 &display_menu,
                 &PredefinedMenuItem::separator(),
                 &swap_item,
+                &caps_item,
                 &clip_item,
             ],
         )?;
         menu.append_items(&[&app, &remote])?;
-        Ok(Self { menu, swap: swap_item, clipboard: clip_item, qualities, displays: display_items })
+        Ok(Self {
+            menu,
+            swap: swap_item,
+            clipboard: clip_item,
+            caps_hangul: caps_item,
+            qualities,
+            displays: display_items,
+        })
     }
 
     /// 화질 체크 표시를 하나만 남긴다.

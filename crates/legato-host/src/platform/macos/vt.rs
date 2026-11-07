@@ -139,7 +139,8 @@ unsafe fn convert(sb: SampleBufferRef) -> Result<EncodedFrame, OSStatus> {
             let (mut count, mut idx) = (0usize, 0usize);
             loop {
                 let (mut p, mut len, mut hdr) = (std::ptr::null::<u8>(), 0usize, 0i32);
-                let st = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fd, idx, &mut p, &mut len, &mut count, &mut hdr);
+                let st =
+                    CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fd, idx, &mut p, &mut len, &mut count, &mut hdr);
                 if st != 0 {
                     return Err(st);
                 }
@@ -252,7 +253,12 @@ impl VtEncoder {
     }
 
     /// CVPixelBuffer(크기가 세션과 같아야 함)를 인코딩한다.
-    pub fn encode_pixel_buffer(&mut self, pixel_buffer: *mut c_void, width: usize, height: usize) -> Result<Option<EncodedFrame>> {
+    pub fn encode_pixel_buffer(
+        &mut self,
+        pixel_buffer: *mut c_void,
+        width: usize,
+        height: usize,
+    ) -> Result<Option<EncodedFrame>> {
         if width != self.width || height != self.height {
             bail!("프레임 크기가 인코더와 다름 ({width}x{height}, 인코더 {}x{})", self.width, self.height);
         }

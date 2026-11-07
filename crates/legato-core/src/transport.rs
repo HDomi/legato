@@ -69,9 +69,9 @@ impl ServerCertVerifier for FingerprintVerifier {
         let fp = fingerprint(end_entity);
         *self.seen.lock().expect("뮤텍스") = Some(fp.clone());
         match &self.expected {
-            Some(exp) if *exp != fp => Err(rustls::Error::General(format!(
-                "호스트 지문 불일치 (기대 {exp}, 실제 {fp})"
-            ))),
+            Some(exp) if *exp != fp => {
+                Err(rustls::Error::General(format!("호스트 지문 불일치 (기대 {exp}, 실제 {fp})")))
+            }
             _ => Ok(ServerCertVerified::assertion()),
         }
     }

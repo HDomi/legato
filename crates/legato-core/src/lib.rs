@@ -20,8 +20,5 @@ pub const ALPN: &[u8] = b"legato/1";
 
 /// 지금 시각을 유닉스 마이크로초로 돌려준다. 캡처 시각 기록과 지연 측정에 쓴다.
 pub fn now_micros() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_micros() as u64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
 }

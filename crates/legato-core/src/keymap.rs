@@ -6,7 +6,10 @@ use crate::protocol::Os;
 
 /// 뷰어 OS 와 호스트 OS 가 다를 때 Cmd(Meta) 와 Control 을 서로 바꾼다.
 pub fn should_swap_cmd_ctrl(viewer: Os, host: Os) -> bool {
-    matches!((viewer, host), (Os::Mac, Os::Windows) | (Os::Mac, Os::Linux) | (Os::Windows, Os::Mac) | (Os::Linux, Os::Mac))
+    matches!(
+        (viewer, host),
+        (Os::Mac, Os::Windows) | (Os::Mac, Os::Linux) | (Os::Windows, Os::Mac) | (Os::Linux, Os::Mac)
+    )
 }
 
 /// W3C 키 이름에 Cmd↔Ctrl 교환을 적용한다.

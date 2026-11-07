@@ -11,9 +11,7 @@ pub use capture::{CaptureHandle, start_capture};
 pub use displays::list_displays;
 pub use input::Injector;
 
-use windows::Win32::System::Power::{
-    ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED, SetThreadExecutionState,
-};
+use windows::Win32::System::Power::{ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED, SetThreadExecutionState};
 use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 
 /// Windows 는 화면 캡처 권한이 따로 없다.

@@ -52,6 +52,8 @@ pub struct AppConfig {
     pub swap: bool,
     /// 클립보드 공유 여부 (메뉴에서 끄고 켬).
     pub clipboard_on: Arc<AtomicBool>,
+    /// Caps Lock 을 원격 한/영 전환 키로 쓴다 (macOS 에서 Caps Lock 으로 한/영을 바꾸는 사람용).
+    pub caps_hangul: bool,
 }
 
 pub struct App {
@@ -62,12 +64,29 @@ pub struct App {
     menu: Option<ViewerMenu>,
     wins: HashMap<WindowId, ViewWin>,
     started: bool,
+    /// Caps Lock 마지막 이벤트 (눌림 여부, 시각). 한 번 누를 때 눌림·뗌이 연달아 오는지 가려낸다.
+    last_caps: Option<(bool, std::time::Instant)>,
     pub exit_message: Option<String>,
 }
 
 impl App {
-    pub fn new(cfg: AppConfig, ctl: UnboundedSender<ClientMsg>, routes: Routes, proxy: EventLoopProxy<UserEvent>) -> Self {
-        Self { cfg, ctl, routes, proxy, menu: None, wins: HashMap::new(), started: false, exit_message: None }
+    pub fn new(
+        cfg: AppConfig,
+        ctl: UnboundedSender<ClientMsg>,
+        routes: Routes,
+        proxy: EventLoopProxy<UserEvent>,
+    ) -> Self {
+        Self {
+            cfg,
+            ctl,
+            routes,
+            proxy,
+            menu: None,
+            wins: HashMap::new(),
+            started: false,
+            last_caps: None,
+            exit_message: None,
+        }
     }
 
     fn send_input(&self, display_id: u32, event: InputEvent) {
@@ -183,6 +202,12 @@ impl App {
                     m.swap.set_checked(self.cfg.swap);
                 }
             }
+            menu::ID_CAPS_HANGUL => {
+                self.cfg.caps_hangul = !self.cfg.caps_hangul;
+                if let Some(m) = &self.menu {
+                    m.caps_hangul.set_checked(self.cfg.caps_hangul);
+                }
+            }
             menu::ID_CLIPBOARD => {
                 let on = !self.cfg.clipboard_on.load(Ordering::SeqCst);
                 self.cfg.clipboard_on.store(on, Ordering::SeqCst);
@@ -225,7 +250,14 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         self.started = true;
-        match ViewerMenu::new(&self.cfg.host_name, self.cfg.quality, self.cfg.swap, &self.cfg.displays, &self.cfg.open) {
+        match ViewerMenu::new(
+            &self.cfg.host_name,
+            self.cfg.quality,
+            self.cfg.swap,
+            self.cfg.caps_hangul,
+            &self.cfg.displays,
+            &self.cfg.open,
+        ) {
             Ok(m) => {
                 #[cfg(target_os = "macos")]
                 m.menu.init_for_nsapp();
@@ -274,6 +306,32 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         let swap = self.cfg.swap;
+        let caps_hangul = self.cfg.caps_hangul;
+        // Caps Lock 처리에서 self 를 빌려야 해서 창 정보는 필요한 것만 먼저 꺼낸다.
+        if let WindowEvent::KeyboardInput { .. } = &event
+            && let Some(display_id) = self.wins.get(&id).map(|w| w.display_id)
+        {
+            if let WindowEvent::KeyboardInput { event: ke, .. } = &event
+                && let Some(code) = to_w3c(ke.physical_key)
+            {
+                let down = ke.state == ElementState::Pressed;
+                if code == "CapsLock" && caps_hangul {
+                    let now = std::time::Instant::now();
+                    let same_press =
+                        matches!(self.last_caps, Some((true, t)) if !down && now.duration_since(t).as_millis() < 500);
+                    self.last_caps = Some((down, now));
+                    if !same_press {
+                        for d in [true, false] {
+                            self.send_input(display_id, InputEvent::Key { code: "Lang1".into(), down: d });
+                        }
+                    }
+                    return;
+                }
+                let code = if swap { swap_cmd_ctrl(&code).to_string() } else { code };
+                self.send_input(display_id, InputEvent::Key { code, down });
+            }
+            return;
+        }
         let Some(w) = self.wins.get_mut(&id) else { return };
         let display_id = w.display_id;
         let mut input: Option<InputEvent> = None;
@@ -329,12 +387,6 @@ impl ApplicationHandler<UserEvent> for App {
                         InputEvent::Scroll { dx: l.x as f32, dy: l.y as f32, pixels: true }
                     }
                 });
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(code) = to_w3c(event.physical_key) {
-                    let code = if swap { swap_cmd_ctrl(&code).to_string() } else { code };
-                    input = Some(InputEvent::Key { code, down: event.state == ElementState::Pressed });
-                }
             }
             _ => {}
         }

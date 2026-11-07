@@ -109,6 +109,9 @@ enum Cmd {
         #[command(subcommand)]
         action: ServiceCmd,
     },
+    /// 진단용: 한/영 입력 소스를 한 번 바꾸고 결과를 출력한다 (macOS).
+    #[command(hide = true)]
+    ToggleIme,
     /// macOS 로그인 화면 에이전트 관리 (로그아웃 상태에서도 접속).
     LoginAgent {
         #[command(subcommand)]
@@ -123,8 +126,7 @@ fn main() -> Result<()> {
         // 아직 스레드가 하나뿐일 때 설정한다 (서비스 헬퍼도 이 값을 물려받는다).
         unsafe { std::env::set_var("LEGATO_CONFIG_DIR", dir) };
     }
-    let filter =
-        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,quinn=warn".into());
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,quinn=warn".into());
     match &cli.log_file {
         Some(path) => {
             let file = std::fs::OpenOptions::new()
@@ -132,7 +134,11 @@ fn main() -> Result<()> {
                 .append(true)
                 .open(path)
                 .with_context(|| format!("로그 파일 열기 실패: {}", path.display()))?;
-            tracing_subscriber::fmt().with_writer(std::sync::Mutex::new(file)).with_ansi(false).with_env_filter(filter).init();
+            tracing_subscriber::fmt()
+                .with_writer(std::sync::Mutex::new(file))
+                .with_ansi(false)
+                .with_env_filter(filter)
+                .init();
         }
         None => tracing_subscriber::fmt().with_writer(std::io::stderr).with_env_filter(filter).init(),
     }
@@ -173,6 +179,11 @@ fn main() -> Result<()> {
         }
         Cmd::Service { action } => service_cmd(action),
         Cmd::LoginAgent { action } => login_agent_cmd(action),
+        Cmd::ToggleIme => {
+            #[cfg(target_os = "macos")]
+            println!("{:?}", platform::macos_ime_toggle());
+            Ok(())
+        }
     }
 }
 
@@ -365,23 +376,26 @@ fn serve(
 
     let _sleep_guard = if allow_sleep { None } else { platform::prevent_sleep() };
 
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    rt.block_on(async move {
-        let addr: SocketAddr = format!("{bind}:{port}").parse().context("수신 주소 형식 오류")?;
-        let endpoint = legato_core::transport::server_endpoint(&id, addr)?;
-        tracing::info!("{addr} 에서 대기 중. 지문 {}", short_fingerprint(&fp));
-        events::emit(
-            "listening",
-            serde_json::json!({ "port": port, "fingerprint": fp, "addresses": local_addresses() }),
-        );
-        let limits = legato_core::protocol::EncodeParams { max_width, fps, bitrate };
-        let state = Arc::new(server::ServerState::new(display, cfg.access_code.clone(), limits));
-        tokio::select! {
-            r = server::run(endpoint.clone(), state) => r,
-            _ = tokio::signal::ctrl_c() => {
-                endpoint.close(0u32.into(), b"shutdown");
-                Ok(())
+    let bind = bind.to_string();
+    platform::run_server(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        rt.block_on(async move {
+            let addr: SocketAddr = format!("{bind}:{port}").parse().context("수신 주소 형식 오류")?;
+            let endpoint = legato_core::transport::server_endpoint(&id, addr)?;
+            tracing::info!("{addr} 에서 대기 중. 지문 {}", short_fingerprint(&fp));
+            events::emit(
+                "listening",
+                serde_json::json!({ "port": port, "fingerprint": fp, "addresses": local_addresses() }),
+            );
+            let limits = legato_core::protocol::EncodeParams { max_width, fps, bitrate };
+            let state = Arc::new(server::ServerState::new(display, cfg.access_code.clone(), limits));
+            tokio::select! {
+                r = server::run(endpoint.clone(), state) => r,
+                _ = tokio::signal::ctrl_c() => {
+                    endpoint.close(0u32.into(), b"shutdown");
+                    Ok(())
+                }
             }
-        }
+        })
     })
 }
