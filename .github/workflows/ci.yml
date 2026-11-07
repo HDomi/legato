@@ -37,13 +37,17 @@ jobs:
         run: |
           set -o pipefail
           cargo clippy --locked --message-format=short -- -D warnings 2>&1 | tee ci-clippy.log
-      # 로그는 로그인해야 보이지만 annotation 은 공개 페이지에 보인다. 오류 줄을 annotation 으로 남긴다.
+      # 로그는 로그인해야 보이지만 annotation 은 공개 페이지에 보인다. 실패한 로그 끝부분을 줄마다 annotation 으로 남긴다.
       - name: Failure summary
         if: failure()
         shell: bash
         run: |
-          grep -hE '(^|: )(error|warning)(\[[A-Za-z0-9_:]+\])?: |panicked|FAILED' ci-test.log ci-clippy.log 2>/dev/null \
-            | grep -v 'could not compile' | head -40 | sed 's/^/::error::/' || true
+          for f in ci-clippy.log ci-test.log; do
+            [ -s "$f" ] || continue
+            # annotation 은 단계당 10개까지라 한 개에 여러 줄(%0A)로 담는다.
+            msg=$(tail -n 40 "$f" | tr -d '\r' | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=$f::$msg"
+          done
 
   app:
     runs-on: macos-26
@@ -70,4 +74,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          grep -hE '(^|: )(error|warning)(\[[A-Za-z0-9_:]+\])?: |panicked|Error' ci-app.log 2>/dev/null | head -40 | sed 's/^/::error::/' || true
+          if [ -s ci-app.log ]; then
+            msg=$(tail -n 40 ci-app.log | tr -d '\r' | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=app::$msg"
+          fi
