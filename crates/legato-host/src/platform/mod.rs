@@ -2,8 +2,9 @@
 
 use legato_core::codec::I420Frame;
 
-/// 캡처 설정.
+/// 캡처 설정. 일부 필드는 OS 구현에서만 읽어서, 구현이 없는 OS 에서는 미사용 경고를 끈다.
 #[derive(Debug, Clone)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct CaptureOptions {
     pub display_id: u32,
     /// 인코딩 최대 폭 (픽셀). 원본이 더 크면 비율을 유지해 줄인다.
