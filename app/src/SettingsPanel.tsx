@@ -112,6 +112,7 @@ export default function SettingsPanel({ onAutoCheckChange }: { onAutoCheckChange
             {info.adhoc ? t('settings.signedAdhoc') : t('settings.signedStable')}
           </p>
           <p className="muted small-text">{t('settings.keepData')}</p>
+          <p className="muted small-text">{t('settings.keychainNote')}</p>
         </div>
       )}
 

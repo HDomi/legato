@@ -128,6 +128,8 @@ const ko = {
   'settings.signedAdhoc':
     '임시(ad-hoc) 서명 앱입니다. 업데이트하면 macOS 권한을 다시 허용해야 합니다. 고정 인증서로 서명한 릴리스부터는 유지됩니다.',
   'settings.keepData': '고정 접속 코드 · 주소록 · 설정은 앱 밖(사용자 설정 폴더)에 있어서 업데이트해도 지워지지 않습니다.',
+  'settings.keychainNote':
+    '저장한 접속 코드는 로그인 키체인에 보관되며, 업데이트 뒤에도 키체인 암호를 다시 묻지 않도록 이 사용자 계정의 다른 앱도 읽을 수 있게 저장됩니다. 공용 컴퓨터에서는 코드를 저장하지 마세요.',
   'settings.startup': '시작',
   'settings.launchAtLogin': '로그인하면 Legato 실행',
   'settings.autoHost': 'Legato 가 켜지면 바로 접속 대기',
@@ -260,6 +262,8 @@ const en: Record<Key, string> = {
   'settings.signedAdhoc':
     "Ad-hoc signed. After updating you'll need to allow the macOS permissions again. Releases signed with the fixed certificate keep them.",
   'settings.keepData': 'Your access code, address book and settings live outside the app (in your settings folder), so updates never delete them.',
+  'settings.keychainNote':
+    "Saved access codes are kept in your login keychain. So that updates don't ask for the keychain password again, they are stored so other apps running as this user can read them. Don't save codes on shared computers.",
   'settings.startup': 'Startup',
   'settings.launchAtLogin': 'Open Legato at login',
   'settings.autoHost': 'Start waiting for connections when Legato opens',

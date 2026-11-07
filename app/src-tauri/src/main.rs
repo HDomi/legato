@@ -11,6 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod keychain;
 mod update;
 
 /// 이 컴퓨터(호스트)에 접속해 있는 원격 세션 수. 업데이트 보류 판단용.
@@ -333,25 +334,13 @@ fn host_request_permissions() -> Result<serde_json::Value, String> {
     run_json("legato-host", &["request-permissions"])
 }
 
-/// 키체인(macOS) / 자격 증명 관리자(Windows) 항목. 주소마다 하나.
-fn keychain(address: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new("com.hdomi.legato", address).map_err(|e| e.to_string())
-}
-
 fn saved_code(address: &str) -> Result<Option<String>, String> {
-    match keychain(address)?.get_password() {
-        Ok(p) => Ok(Some(p)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("{}: {e}", tr("키체인을 읽지 못했습니다", "Couldn't read the keychain"))),
-    }
+    keychain::get(address).map_err(|e| format!("{}: {e}", tr("키체인을 읽지 못했습니다", "Couldn't read the keychain")))
 }
 
 #[tauri::command]
 fn forget_code(address: String) -> Result<(), String> {
-    match keychain(&address)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
+    keychain::delete(&address)
 }
 
 /// 뷰어를 띄워 원격 컴퓨터에 접속한다. 비밀번호는 명령줄 대신 환경 변수로 넘긴다 (ps 에 안 보이게).
@@ -403,7 +392,7 @@ fn connect(
                 );
                 return;
             }
-            let result = keychain(&addr).and_then(|e| e.set_password(&secret).map_err(|e| e.to_string()));
+            let result = keychain::set(&addr, &secret);
             let _ = app2.emit("code-saved", serde_json::json!({ "tag": id2, "address": addr, "error": result.err() }));
         }))
     } else {

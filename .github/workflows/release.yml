@@ -40,6 +40,19 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
+      # 태그 릴리스는 반드시 고정 인증서로 서명한다. ad-hoc 으로 대신하면 사용자 Mac 의 화면 기록 · 손쉬운 사용
+      # 권한이 업데이트마다 초기화되고, 앱 안 업데이터의 서명 확인도 약해진다.
+      - name: Require signing certificate
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12_BASE64" ] || [ -z "$MACOS_CERT_PASSWORD" ]; then
+            echo "::error::MACOS_CERT_P12_BASE64 / MACOS_CERT_PASSWORD 시크릿이 없습니다. scripts/make-signing-cert.sh 결과를 레포 Secrets 에 등록해 주세요."
+            exit 1
+          fi
+
       # 로컬과 같은 스크립트로 테스트 · 빌드 · 서명 · DMG · zip 을 만든다.
       - name: Build, sign, package
         env:
