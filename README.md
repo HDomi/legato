@@ -67,12 +67,16 @@ Legato 는 원격받는 쪽이 UDP 포트 하나만 열어두면 IP 로 바로 �
 
 - **직접 연결**: QUIC(UDP) 하나. 계정 · 중계 서버 · 클라우드 없음.
 - **낮은 지연**: Mac 하드웨어 인코딩(VideoToolbox) 루프백 측정 1920×1248 · 30fps · 지연 중간값 14ms, 고화질 3320×2160 · 지연 중간값 28ms (M4 MacBook Air, `--headless`).
+- **지연이 쌓이지 않는 전송**: 뷰어가 디코딩한 프레임을 확인 응답하고, 호스트는 확인 안 된 프레임이 RTT+100ms 보다 오래되면 새 프레임을 보내지 않는다. BBR 혼잡 제어, 영상 · 입력 · 클립보드 스트림 분리와 우선순위.
 - **화질 자동 조절**: 네트워크 · 뷰어 처리량을 보고 고화질 / 균형 / 절약을 오르내린다.
 - **멀티 모니터 · 클립보드**: 원격 모니터마다 창(Mac 은 Space), 텍스트 클립보드 양방향.
 - **두 가지 자격 증명**: 화면에 보이는 **표시 비밀번호**(켤 때마다 교체) + 나만 아는 **고정 접속 코드**(해시만 저장). 둘 중 하나만 맞으면 된다.
 - **무인 접속**: 로그인 시 실행 → 바로 접속 대기 → 대기 중 잠자기 방지. macOS 로그인 화면 · Windows 로그인 화면 · UAC 창까지(서비스 모드).
+- **원격 잠금 해제**: 호스트 화면이 잠겨 있으면 뷰어에 🔒 로 알리고, 메뉴의 **잠금 화면 깨우기** 로 깨운 뒤 암호를 입력한다. 세션 중에는 호스트 화면이 저절로 잠기지 않는다.
+- **한/영 전환**: 원격 메뉴의 한/영 키(또는 Caps Lock 을 한/영으로)로 호스트의 입력 소스를 바꾼다.
+- **한국어 · 영어**: 앱 · 뷰어 · 호스트 안내 문구 모두. 설정 탭에서 바꾸고, 기본은 한국어.
 - **앱 안 업데이트**: 새 릴리스를 배지로 알리고, 받은 파일을 체크섬 · 서명으로 확인한 뒤 교체한다.
-- **강한 기본 보안**: TLS 1.3, 호스트 지문 고정, 비밀번호를 네트워크로 보내지 않는 상호 인증, 무차별 대입 잠금.
+- **강한 기본 보안**: TLS 1.3, 호스트 지문 고정, 비밀번호를 네트워크로 보내지 않는 상호 인증, 무차별 대입 잠금(병렬 추측 · 주소 바꿔 가며 추측까지), root · SYSTEM 으로 도는 부분은 관리자 전용 경로에서만 실행.
 - **네이티브 성능**: 캡처 · 인코딩 · 렌더는 Rust. UI 만 Tauri(React)라 앱이 가볍다(약 28MB).
 
 ## 주요 기능
@@ -83,7 +87,10 @@ Legato 는 원격받는 쪽이 UDP 포트 하나만 열어두면 IP 로 바로 �
 | **자동 화질** | 버린 프레임 · 전송 대기 · 뷰어 키프레임 재요청을 1초마다 보고 2초 혼잡이면 내리고 10초 여유면 올린다. 내린 뒤에는 30초~10분 동안 다시 올리지 않아 출렁이지 않는다 |
 | **조작** | 마우스 이동 · 클릭 · 드래그 · 더블/트리플 클릭 · 가운데 · 앞/뒤 버튼, 휠과 트랙패드 스크롤, 키보드(물리 키 위치 기준이라 한글 · 영문 자판과 무관). Mac ↔ Windows 사이에서는 Cmd ↔ Ctrl 자동 교환. ⌘Q 등 단축키도 원격으로 간다. Ctrl+Alt+Del 은 메뉴에서 |
 | **뷰어 창** | 원격 모니터마다 창 하나. Mac: 로컬 모니터마다 나눠서 네이티브 전체화면(Space), `--windowed` 로 일반 창. Windows: 일반 창. 레터박스 · HiDPI 대응 |
-| **뷰어 메뉴** | 연결 끊기, Ctrl+Alt+Del 보내기, 화질(자동 · 고화질 · 균형 · 절약), 디스플레이 켜고 끄기, Cmd ↔ Ctrl 바꾸기, 클립보드 공유 |
+| **뷰어 메뉴** | 상태(핑 · fps · 디코딩 시간 · 화질, 잠김이면 🔒), 연결 끊기, 잠금 화면 깨우기, Ctrl+Alt+Del 보내기, 화질(자동 · 고화질 · 균형 · 절약), 디스플레이 켜고 끄기, Cmd ↔ Ctrl 바꾸기, Caps Lock 을 한/영으로, 클립보드 공유 |
+| **지연 제한** | 뷰어가 프레임마다 확인 응답(FrameAck). 확인 안 된 프레임이 RTT+100ms 보다 오래됐거나 90장을 넘으면 호스트가 인코딩을 건너뛰어 지연이 쌓이지 않는다(느린 뷰어 시험에서 지연 중간값 339ms → 157ms). BBR 혼잡 제어, 영상은 입력 · 제어보다 낮은 우선순위 |
+| **한/영** | 한/영 키(Lang1)를 Mac 호스트는 입력 소스 전환으로, Windows 호스트는 VK_HANGUL 로 보낸다. Mac 뷰어에서 Caps Lock 을 한/영으로 쓸 수 있다(설정 탭) |
+| **잠금 해제** | 잠김 감지(Mac: 세션 정보, Windows: 입력 데스크톱 이름) → 뷰어에 알림. **잠금 화면 깨우기** 로 디스플레이를 켜고 암호 입력 창을 띄운다. 세션 중 화면 잠김 · 디스플레이 잠자기 방지 |
 | **클립보드** | 텍스트 양방향 동기화 (최대 1MB). 메뉴에서 끌 수 있다. 접속한 순간의 기존 내용은 보내지 않는다 |
 | **자격 증명** | 표시 비밀번호(사람이 읽기 쉬운 `xxxx-xxxx-xxxx`, 켤 때마다 새로 · 끄기 가능) + 고정 접속 코드(10자 이상, 호스트엔 PBKDF2 해시만). 표시 비밀번호를 끄면 접속 코드로만 들어온다 |
 | **키체인 저장** | 고정 접속 코드로 인증에 성공했을 때만 macOS 키체인 / Windows 자격 증명 관리자에 저장. 주소록에 "코드 저장됨" 표시와 **바로 접속** 버튼. 표시 비밀번호는 저장하지 않는다 |
@@ -92,7 +99,8 @@ Legato 는 원격받는 쪽이 UDP 포트 하나만 열어두면 IP 로 바로 �
 | **로그인 화면 (macOS)** | 로그아웃 · 재부팅 뒤 로그인 화면에서도 접속을 받는 LaunchAgent (관리자 암호로 설치) |
 | **서비스 모드 (Windows)** | SYSTEM 서비스가 로그인 전부터 대기. 로그인 · 잠금 화면, UAC 확인 창 캡처와 입력, 관리자 권한 창 조작, Ctrl+Alt+Del |
 | **세션** | 한 번에 한 뷰어. 인증을 통과한 새 접속이 기존 세션을 넘겨받아 네트워크가 끊겼다 붙어도 바로 들어오고, 밀려난 쪽엔 이유를 알려준다 |
-| **업데이트** | 헤더 배지 → 노트 확인 → **업데이트하고 다시 열기**. Mac 은 zip 을 체크섬 · 번들 id · 버전 · 서명으로 확인 후 교체(실패하면 원래 앱 복구), Windows 는 설치 파일 실행. 원격 세션 중이면 먼저 묻고, 켜져 있던 호스트는 다시 켠다 |
+| **설정 탭** | 언어(한국어 · English), 업데이트 확인 · 설치와 자동 확인, 서명 · 권한 유지 안내, 로그인하면 실행 · 바로 접속 대기, Caps Lock 한/영 |
+| **업데이트** | 설정 탭이나 헤더 배지 → 노트 확인 → **업데이트하고 다시 열기**. 지금보다 새 버전만 설치한다. Mac 은 zip 을 체크섬 · 번들 id · 버전 · 서명으로 확인 후 교체(실패하면 원래 앱 복구), Windows 는 설치 파일 실행. 원격 세션 중이면 먼저 묻고, 켜져 있던 호스트는 다시 켠다 |
 | **안내** | 권한이 없거나 캡처가 실패하면 이유를 뷰어에 그대로 보여준다. 호스트에 입력 권한이 없으면 접속 직후 알림 |
 
 ## 설치
@@ -176,7 +184,11 @@ shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 
 **로그아웃 · 재부팅 대비 (선택)**
 
-집 Mac 에서 **로그인 화면에서도 접속 (macOS)** › **켜기** (관리자 암호). 로그인 화면이 떠 있는 동안 고정 접속 코드로 접속할 수 있다.
+집 Mac 에서 **로그인 화면에서도 접속 (macOS)** › **켜기** (관리자 암호). 로그인 화면이 떠 있는 동안 고정 접속 코드로 접속할 수 있다. 실행 파일과 설정을 root 전용 위치에 복사해 두는 방식이라, 앱을 업데이트하거나 접속 코드를 바꾸면 같은 자리에 **다시 적용** 버튼이 나온다. 눌러야 로그인 화면에도 반영된다 (Windows 서비스 모드도 업데이트 뒤 같은 버튼).
+
+**화면이 잠겨 있을 때**
+
+뷰어 메뉴 상태 줄에 🔒 가 붙는다. **원격 › 잠금 화면 깨우기** 로 디스플레이를 켜고 암호 입력 창을 띄운 뒤 원격으로 Mac 암호를 입력한다. 접속해 있는 동안에는 호스트 화면이 저절로 잠기지 않는다.
 
 **주의 · 검증 전**
 
@@ -221,8 +233,12 @@ legato-viewer 192.168.0.10 --headless --frames 120 --dump frame.png   # 창 없�
 | **호스트 확인** | 호스트는 처음 실행 때 만든 자체 서명 인증서를 계속 쓴다. 뷰어는 SHA-256 지문을 처음 접속 때 기억하고(TOFU) 이후 바뀌면 거부. 서명 검증(CertificateVerify)은 정상 수행 |
 | **인증** | 비밀번호 · 접속 코드는 네트워크로 보내지 않는다. 호스트가 슬롯별 salt 와 nonce 를 주면 뷰어가 `HMAC(PBKDF2-SHA256(값, 20만 회), nonce ‖ TLS exporter)` 로 답한다. TLS 채널 바인딩이라 중간자가 다른 TLS 세션으로 중계하면 실패한다 |
 | **상호 인증** | 호스트도 같은 키로 만든 증명을 돌려줘야 뷰어가 연결을 유지한다. 비밀번호를 모르는 가짜 호스트는 걸러진다. 지문은 이 증명이 통과한 뒤에만 저장한다 |
-| **무차별 대입** | IP 별 5회 실패하면 30초 잠금, 이후 실패마다 두 배(최대 1시간). 잠긴 동안은 맞는 값도 거부 |
-| **저장** | 고정 접속 코드: 호스트엔 PBKDF2 결과만(원문 없음), 뷰어엔 OS 키체인. 표시 비밀번호: 화면에 보여주는 값이라 호스트 설정 파일에 원문 저장. 설정 · 인증서 파일은 본인만 읽기(macOS 0600) |
+| **무차별 대입** | 주소(IPv6 는 /64) 별 5회 실패하면 30초 잠금, 이후 실패마다 두 배(최대 1시간). 잠긴 동안은 맞는 값도 거부. 같은 주소의 인증은 한 번에 하나만(병렬 추측 차단), 모든 주소 합쳐 1분에 20회 넘게 실패하면 30초 동안 전부 거부. 인증 전 연결은 32개까지, 인증 전 메시지는 4KB 까지 |
+| **가짜 호스트 대비** | 뷰어는 PBKDF2 반복 10만 회 미만을 요구하는 호스트를 거부한다. 지문이 바뀐 호스트에는 저장한 접속 코드를 자동으로 보내지 않는다(직접 입력해야 함) |
+| **권한 분리** | macOS 로그인 화면 에이전트(root)는 `/Library/PrivilegedHelperTools` 에 복사한 실행 파일과 root 만 읽는 설정 사본(접속 코드만, 표시 비밀번호 제외)을 쓴다. Windows 서비스(SYSTEM)는 `Program Files\Legato\service` 에 복사한 실행 파일로 돌고, 로그는 관리자 전용 `ProgramData\Legato\logs` 에 쓰며 사용자 설정 폴더에는 쓰지 않는다. 방화벽 규칙은 개인 · 도메인 네트워크에만 연다 |
+| **업데이트** | 체크섬, 번들 id · 버전, 서명(인증서 서명 빌드면 같은 인증서인지까지) 확인 후 교체. 예전 버전으로 되돌리는 설치는 거부 |
+| **CI** | 워크플로 기본 권한은 읽기 전용(릴리스 게시 잡만 쓰기), 외부 액션은 커밋 SHA 로 고정 |
+| **저장** | 고정 접속 코드: 호스트엔 PBKDF2 결과만(원문 없음), 뷰어엔 OS 키체인. 표시 비밀번호: 화면에 보여주는 값이라 호스트 설정 파일에 원문 저장. 설정 · 인증서 파일은 본인만 읽기(macOS 0600, 임시 파일 링크 바꿔치기 방지), 로그 파일도 0600. macOS 키체인 항목은 업데이트 뒤 암호를 다시 묻지 않도록 같은 사용자의 다른 앱도 읽을 수 있게 저장한다(공용 컴퓨터에서는 저장하지 않는다) |
 | **세션** | 한 번에 한 뷰어. 비밀 값은 명령줄 인자로 넘기지 않는다(`ps` 에 안 보이게 환경 변수 · 표준 입력) |
 
 **주의**
@@ -268,8 +284,8 @@ legato-viewer 192.168.0.10 --headless --frames 120 --dump frame.png   # 창 없�
 | `app.json` | 앱 설정 (자동 접속 대기) | 〃 |
 | 저장한 접속 코드 | 키체인, 서비스 `com.hdomi.legato`, 계정 = 주소 | 자격 증명 관리자 |
 | 로그인 시 실행 | `~/Library/LaunchAgents/` 의 Legato 항목 | 레지스트리 `Run` |
-| 로그인 화면 에이전트 | `/Library/LaunchAgents/com.hdomi.legato.loginwindow.plist`, 로그 `/Library/Logs/Legato/loginwindow.log` | — |
-| 서비스 모드 | — | 서비스 `LegatoHost`, 로그 `설정 폴더\service.log` · `host-helper.log`, 방화벽 규칙 "Legato 호스트 (UDP)" |
+| 로그인 화면 에이전트 | `/Library/LaunchAgents/com.hdomi.legato.loginwindow.plist`, 실행 파일 `/Library/PrivilegedHelperTools/com.hdomi.legato.host`, 설정 사본 `/Library/Application Support/Legato/loginwindow/`, 로그 `/Library/Logs/Legato/loginwindow.log` | — |
+| 서비스 모드 | — | 서비스 `LegatoHost`, 실행 파일 `C:\Program Files\Legato\service\legato-host.exe`, 로그 `C:\ProgramData\Legato\logs\` 의 `service.log` · `host-helper.log`, 방화벽 규칙 "Legato 호스트 (UDP)" |
 | 업데이트 임시 파일 | `~/Library/Caches/com.hdomi.legato/update/` | `%TEMP%\Legato-update\` |
 
 `LEGATO_CONFIG_DIR` 환경 변수로 설정 폴더를 바꿀 수 있다 (여러 인스턴스 테스트용).
@@ -317,14 +333,16 @@ npx tauri build --bundles app    # target/release/bundle/macos/Legato.app
 
 ```bash
 export LEGATO_CONFIG_DIR=/tmp/lg-host
-target/release/legato-host serve --port 47999          # 표준 에러에 표시 비밀번호가 나온다
+target/release/legato-host serve --port 47999          # 표준 출력 JSON 의 display_password 이벤트에 표시 비밀번호가 나온다
 LEGATO_CONFIG_DIR=/tmp/lg-viewer LEGATO_PASSWORD=<표시 비밀번호> \
-  target/release/legato-viewer 127.0.0.1:47999 --headless --frames 120 --dump /tmp/frame.png
+  target/release/legato-viewer --headless --frames 120 --dump /tmp/frame.png -- 127.0.0.1:47999
 ```
 
 - 코드 주석은 한글로 쓴다. 작업은 `main` 브랜치에서 한다.
 - 아이콘은 `assets/icon.svg` 를 고친 뒤 `cd app && npx tauri icon ../assets/icon.svg -o src-tauri/icons` (생성된 `android/`, `ios/` 폴더는 지운다).
-- CI(`.github/workflows/ci.yml`): Mac · Windows 에서 테스트 · clippy, Mac 에서 앱 번들 빌드.
+- CI(`.github/workflows/ci.yml`): Mac · Windows 에서 테스트 · clippy, Mac · Windows 에서 앱 빌드. 실패하면 로그 끝부분을 요약(annotation)으로 남긴다.
+- 문구는 Rust 쪽 `t!("한국어", "English")`(`legato_core::i18n`, 환경 변수 `LEGATO_LANG`), 앱 쪽 `app/src/i18n.tsx` 사전. 한국어는 존댓말로 쓴다.
+- `LEGATO_DEBUG_NO_LATENCY_LIMIT=1`(호스트) · `LEGATO_DEBUG_DECODE_DELAY_MS=60`(뷰어)로 지연 제한 효과를 비교할 수 있다.
 
 ## 릴리스
 
@@ -352,7 +370,7 @@ ad-hoc 서명은 빌드마다 서명 해시가 바뀌어 macOS 가 화면 기록
 2. GitHub 레포 Settings › Secrets › Actions 에 `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD` 등록.
 3. 그 폴더는 안전한 곳에 백업. 잃어버리면 새 인증서가 되어 모든 Mac 에서 권한을 한 번 다시 허용해야 한다.
 
-서명은 `scripts/sign-macos.sh` 가 [rcodesign](https://github.com/indygreg/apple-platform-rs) 으로 한다 (Apple `codesign` 은 신뢰되지 않은 자체 서명 인증서를 "identity 없음" 으로 거부해서). Secrets 가 없으면 ad-hoc 서명으로 대신하고 경고를 남긴다. 공증(notarization)은 하지 않는다.
+서명은 `scripts/sign-macos.sh` 가 [rcodesign](https://github.com/indygreg/apple-platform-rs) 으로 한다 (Apple `codesign` 은 신뢰되지 않은 자체 서명 인증서를 "identity 없음" 으로 거부해서). 태그 릴리스는 Secrets 가 없으면 실패한다 (업데이트마다 권한이 초기화되는 ad-hoc 릴리스가 나가지 않게). 수동 실행(workflow_dispatch)은 ad-hoc 서명으로 대신하고 경고를 남긴다. 공증(notarization)은 하지 않는다.
 
 ## 로드맵
 
