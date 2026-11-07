@@ -34,6 +34,9 @@ jobs:
           cargo test --locked 2>&1 | tee ci-test.log
       - name: Clippy
         shell: bash
+        # Windows 에서 큰 크레이트(windows) 검사 중 컴파일러 스택이 모자라 오류 없이 끝나는 경우가 있어 스택을 키운다.
+        env:
+          RUST_MIN_STACK: 67108864
         run: |
           set -o pipefail
           cargo clippy --locked --message-format=short -- -D warnings 2>&1 | tee ci-clippy.log
@@ -46,7 +49,10 @@ jobs:
             [ -s "$f" ] || continue
             # annotation 은 단계당 10개까지라 한 개에 여러 줄(%0A)로 담는다.
             msg=$(tail -n 40 "$f" | tr -d '\r' | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-            echo "::error title=$f::$msg"
+            echo "::error title=$f 끝부분::$msg"
+            # 로그 전체에서 원인이 될 만한 줄만 따로 모은다.
+            hits=$(grep -iE 'error|overflow|panicked|STATUS_|memory|signal' "$f" | tr -d '\r' | head -n 40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            [ -n "$hits" ] && echo "::error title=$f 오류 줄::$hits"
           done
 
   app:
