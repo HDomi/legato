@@ -182,7 +182,12 @@ fn host_start(app: AppHandle, proc: State<HostProc>) -> Result<(), String> {
         return Ok(());
     }
     let mut child = no_window(
-        helper_cmd("legato-host")?.arg("serve").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()),
+        // 표준 입력을 열어 두고, 끌 때(또는 앱이 끝나 파이프가 닫힐 때) 호스트가 접속을 정상적으로 닫고 끝나게 한다.
+        helper_cmd("legato-host")?
+            .args(["serve", "--stop-on-stdin-close"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
     )
     .spawn()
     .map_err(|e| format!("{}: {e}", tr("호스트를 실행하지 못했습니다", "Couldn't start the host")))?;
@@ -194,10 +199,24 @@ fn host_start(app: AppHandle, proc: State<HostProc>) -> Result<(), String> {
 
 #[tauri::command]
 fn host_stop(proc: State<HostProc>) {
-    if let Some(mut c) = proc.0.lock().expect("뮤텍스").take() {
-        let _ = c.kill();
-        let _ = c.wait();
+    if let Some(c) = proc.0.lock().expect("뮤텍스").take() {
+        stop_host_child(c);
     }
+}
+
+/// 표준 입력을 닫아 호스트에 정상 종료를 부탁한다(뷰어에 "호스트가 껐음" 이 바로 전달됨).
+/// 3초 안에 안 끝나면 강제로 끝낸다.
+fn stop_host_child(mut c: std::process::Child) {
+    drop(c.stdin.take());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        if matches!(c.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = c.kill();
+    let _ = c.wait();
 }
 
 /// 표시 비밀번호를 새로 만든다. 호스트가 켜져 있으면 다시 시작해야 적용된다.
@@ -672,9 +691,9 @@ fn main() {
         .on_window_event(|window, event| {
             // 앱을 닫으면 호스트도 같이 끈다.
             if let tauri::WindowEvent::Destroyed = event
-                && let Some(mut c) = window.app_handle().state::<HostProc>().0.lock().expect("뮤텍스").take()
+                && let Some(c) = window.app_handle().state::<HostProc>().0.lock().expect("뮤텍스").take()
             {
-                let _ = c.kill();
+                stop_host_child(c);
             }
         })
         .run(tauri::generate_context!())

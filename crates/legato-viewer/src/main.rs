@@ -109,6 +109,9 @@ fn emit(event: &str, data: serde_json::Value) {
 /// QUIC 종료 이유를 사람이 읽을 문장으로 바꾼다.
 fn describe_close(e: &quinn::ConnectionError) -> String {
     match e {
+        quinn::ConnectionError::ApplicationClosed(c) if c.reason.as_ref() == b"host_stopped" => {
+            t!("호스트에서 화면 공유를 껐습니다", "The host turned off screen sharing").into()
+        }
         quinn::ConnectionError::ApplicationClosed(c) if c.reason.as_ref() == b"replaced" => t!(
             "다른 곳에서 이 호스트에 접속해 이 연결은 끊어졌습니다",
             "Another viewer connected to this host, so this connection was closed"
@@ -164,6 +167,8 @@ fn main() {
         emit("closed", serde_json::json!({ "error": format!("{e:#}"), "code": code }));
         std::process::exit(1);
     }
+    // 정리는 끝났다. 남은 작업 스레드(디코더·클립보드 등)를 기다리다 프로세스가 남지 않게 바로 끝낸다.
+    std::process::exit(0);
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -345,7 +350,7 @@ fn run(cli: Cli) -> Result<()> {
             }
         });
     }
-    let mut app = App::new(cfg, ctl_tx, routes, proxy);
+    let mut app = App::new(cfg, ctl_tx, conn.clone(), routes, proxy);
     event_loop.run_app(&mut app)?;
 
     drop(clipboard);

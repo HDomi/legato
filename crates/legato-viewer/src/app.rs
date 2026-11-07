@@ -64,6 +64,8 @@ pub struct AppConfig {
 pub struct App {
     cfg: AppConfig,
     ctl: UnboundedSender<ClientMsg>,
+    /// 창을 닫는 즉시 연결을 끊으려고 들고 있다 (종료 정리를 기다리지 않고 호스트가 바로 공유를 멈추게).
+    conn: quinn::Connection,
     routes: Routes,
     proxy: EventLoopProxy<UserEvent>,
     menu: Option<ViewerMenu>,
@@ -82,12 +84,14 @@ impl App {
     pub fn new(
         cfg: AppConfig,
         ctl: UnboundedSender<ClientMsg>,
+        conn: quinn::Connection,
         routes: Routes,
         proxy: EventLoopProxy<UserEvent>,
     ) -> Self {
         Self {
             cfg,
             ctl,
+            conn,
             routes,
             proxy,
             menu: None,
@@ -199,13 +203,19 @@ impl App {
             m.set_display_open(w.display_id, false);
         }
         if self.wins.is_empty() {
-            event_loop.exit();
+            self.disconnect(event_loop);
         }
+    }
+
+    /// 연결을 바로 닫고 이벤트 루프를 끝낸다.
+    fn disconnect(&mut self, event_loop: &ActiveEventLoop) {
+        self.conn.close(0u32.into(), b"bye");
+        event_loop.exit();
     }
 
     fn handle_menu(&mut self, event_loop: &ActiveEventLoop, id: &str) {
         match id {
-            menu::ID_DISCONNECT => event_loop.exit(),
+            menu::ID_DISCONNECT => self.disconnect(event_loop),
             menu::ID_WAKE => {
                 let _ = self.ctl.send(ClientMsg::WakeScreen);
             }

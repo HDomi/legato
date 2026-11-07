@@ -77,6 +77,9 @@ enum Cmd {
         /// 표시 비밀번호는 메모리에서만 만든다.
         #[arg(long)]
         readonly_config: bool,
+        /// 표준 입력이 닫히면(앱이 끄거나 앱이 끝나면) 접속을 정상적으로 닫고 끝낸다. 앱이 띄울 때 쓴다.
+        #[arg(long)]
+        stop_on_stdin_close: bool,
     },
     /// 표시 비밀번호를 바꾼다. `--generate` 가 없으면 표준 입력 첫 줄을 쓴다.
     SetPassword {
@@ -148,8 +151,8 @@ fn main() -> Result<()> {
         None => tracing_subscriber::fmt().with_writer(std::io::stderr).with_env_filter(filter).init(),
     }
     match cli.cmd {
-        Cmd::Serve { port, bind, max_width, fps, bitrate, allow_sleep, readonly_config } => {
-            serve(port, &bind, max_width, fps, bitrate, allow_sleep, readonly_config)
+        Cmd::Serve { port, bind, max_width, fps, bitrate, allow_sleep, readonly_config, stop_on_stdin_close } => {
+            serve(port, &bind, max_width, fps, bitrate, allow_sleep, readonly_config, stop_on_stdin_close)
         }
         Cmd::SetPassword { generate, json } => set_password(generate, json),
         Cmd::SetAccessCode => set_access_code(),
@@ -375,6 +378,7 @@ fn serve(
     bitrate: u32,
     allow_sleep: bool,
     readonly: bool,
+    stop_on_stdin_close: bool,
 ) -> Result<()> {
     let mut cfg = HostConfig::load()?;
     if !cfg.allow_display_password && cfg.access_code.is_none() {
@@ -441,13 +445,49 @@ fn serve(
             );
             let limits = legato_core::protocol::EncodeParams { max_width, fps, bitrate };
             let state = Arc::new(server::ServerState::new(display, cfg.access_code.clone(), limits));
-            tokio::select! {
+            let r = tokio::select! {
                 r = server::run(endpoint.clone(), state) => r,
-                _ = tokio::signal::ctrl_c() => {
-                    endpoint.close(0u32.into(), b"shutdown");
-                    Ok(())
-                }
-            }
+                _ = shutdown_signal(stop_on_stdin_close) => Ok(()),
+            };
+            // 접속 중인 뷰어에게 "호스트가 껐음" 을 알리고, 종료 패킷이 나갈 시간을 잠깐 준다.
+            // (그냥 끝나면 뷰어는 유휴 시간 초과까지 기다려야 끊긴 걸 안다.)
+            endpoint.close(server::CLOSE_HOST_STOPPED.into(), b"host_stopped");
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), endpoint.wait_idle()).await;
+            tracing::info!("호스트 종료");
+            r
         })
     })
+}
+
+/// 호스트를 끝낼 신호: Ctrl+C, (유닉스) SIGTERM, 그리고 `stop_on_stdin_close` 면 표준 입력이 닫힐 때.
+async fn shutdown_signal(stop_on_stdin_close: bool) {
+    let stdin_closed = async {
+        if !stop_on_stdin_close {
+            return std::future::pending::<()>().await;
+        }
+        // 앱은 표준 입력에 아무것도 쓰지 않는다. 닫히면(EOF) 끝낼 때다.
+        let _ = tokio::task::spawn_blocking(|| {
+            use std::io::Read;
+            let mut buf = [0u8; 64];
+            let mut stdin = std::io::stdin();
+            while matches!(stdin.read(&mut buf), Ok(n) if n > 0) {}
+        })
+        .await;
+    };
+    #[cfg(unix)]
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term => {}
+        _ = stdin_closed => {}
+    }
 }

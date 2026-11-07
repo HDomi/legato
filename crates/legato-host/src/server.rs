@@ -137,6 +137,8 @@ fn sanitize_name(name: &str) -> String {
 
 /// 기존 세션을 닫을 때 쓰는 QUIC 종료 코드와 이유. 뷰어가 이 값으로 안내 문구를 고른다.
 pub const CLOSE_REPLACED: u32 = 6;
+/// 호스트가 꺼져서 닫을 때의 종료 코드.
+pub const CLOSE_HOST_STOPPED: u32 = 7;
 
 async fn handle_connection(
     conn: quinn::Connection,
