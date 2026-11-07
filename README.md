@@ -22,7 +22,8 @@ crates/legato-core    프로토콜, QUIC 전송, 인증, H.264 코덱(OpenH264)
 crates/legato-host    원격받는 쪽. 화면 캡처(ScreenCaptureKit) → 인코딩 → 전송, 입력 주입(CGEvent)
 crates/legato-viewer  접속하는 쪽. 디코딩 → wgpu 렌더, 입력 전송. 세션마다 별도 프로세스
 app/                  Tauri v2 + React 앱. 주소록·호스트 켜기·접속 UI, 위 두 실행 파일을 띄운다
-scripts/              사이드카 빌드, 서명, 버전, 아이콘
+assets/icon.svg       앱 아이콘 원본 (Vibrato 와 같은 바탕·은색 테두리·음영). `npx tauri icon ../assets/icon.svg -o src-tauri/icons` 로 아이콘 세트 생성
+scripts/              사이드카 빌드, 서명, 버전
 ```
 
 ## 쓰기

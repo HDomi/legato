@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <title>legato</title>
+  <defs>
+    <linearGradient id="surface" x1="160" y1="80" x2="864" y2="944" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#263B60"/>
+      <stop offset=".52" stop-color="#141E33"/>
+      <stop offset="1" stop-color="#0B101C"/>
+    </linearGradient>
+    <linearGradient id="silver-rim" x1="64" y1="64" x2="960" y2="960" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E6E8E8" stop-opacity=".8"/>
+      <stop offset=".16" stop-color="#D4D7DA" stop-opacity=".65"/>
+      <stop offset=".38" stop-color="#C4C9CE" stop-opacity="0"/>
+      <stop offset=".62" stop-color="#C4C9CE" stop-opacity="0"/>
+      <stop offset=".84" stop-color="#D4D7DA" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#E6E8E8" stop-opacity=".65"/>
+    </linearGradient>
+    <linearGradient id="screens" x1="250" y1="330" x2="774" y2="694" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E4F0FF"/>
+      <stop offset="1" stop-color="#80ACFF"/>
+    </linearGradient>
+    <linearGradient id="slur" x1="248" y1="328" x2="776" y2="440" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#62D8FF"/>
+      <stop offset="1" stop-color="#A1FFD4"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="76" width="896" height="896" rx="204" fill="#000" fill-opacity=".18"/>
+  <rect x="64" y="64" width="896" height="896" rx="204" fill="url(#surface)"/>
+  <rect x="66.5" y="66.5" width="891" height="891" rx="201.5" stroke="url(#silver-rim)" stroke-width="5"/>
+  <path d="M248 328C443.921 271.423 619.921 308.756 776 440" stroke="url(#slur)" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M420 638H248C230.327 638 216 623.673 216 606V444C216 426.327 230.327 412 248 412H536C553.673 412 568 426.327 568 444" stroke="url(#screens)" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="500" y="524" width="308" height="194" rx="32" stroke="url(#screens)" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
