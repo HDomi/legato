@@ -18,6 +18,7 @@ export default function HostPanel() {
   const [service, setService] = useState<{ installed: boolean; running: boolean; stale?: boolean; supported?: boolean } | null>(null);
   const [serviceBusy, setServiceBusy] = useState(false);
   const [locked, setLocked] = useState(false);
+  const [lid, setLid] = useState<{ supported: boolean; enabled: boolean } | null>(null);
   const [loginAgent, setLoginAgent] = useState<{ installed: boolean; stale?: boolean; supported: boolean } | null>(null);
 
   const refresh = useCallback(async () => {
@@ -28,6 +29,7 @@ export default function HostPanel() {
       setRunning(await api.hostRunning());
       setService(await api.serviceStatus().catch(() => null));
       setLoginAgent(await api.loginAgentStatus().catch(() => null));
+      setLid(await api.lidStatus().catch(() => null));
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -123,6 +125,20 @@ export default function HostPanel() {
     try {
       await api.loginAgentChange(install);
       setNotice(install ? t('host.loginAgentOn') : t('host.loginAgentOffDone'));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setServiceBusy(false);
+      refresh();
+    }
+  };
+
+  const changeLid = async (enable: boolean) => {
+    setServiceBusy(true);
+    setError(null);
+    try {
+      await api.lidChange(enable);
+      setNotice(enable ? t('host.lidOnDone') : t('host.lidOffDone'));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -331,6 +347,20 @@ export default function HostPanel() {
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {lid?.supported && (
+        <div className="card">
+          <h3>{t('host.lid')}</h3>
+          <p className="muted small-text">{t('host.lidDesc')}</p>
+          {lid.enabled && <p className="warn-text small-text">{t('host.lidWarn')}</p>}
+          <div className="row">
+            <span>{lid.enabled ? t('host.on') : t('host.offState')}</span>
+            <button className="small" disabled={serviceBusy} onClick={() => changeLid(!lid.enabled)}>
+              {lid.enabled ? t('host.turnOff') : t('host.turnOn')}
+            </button>
+          </div>
         </div>
       )}
 

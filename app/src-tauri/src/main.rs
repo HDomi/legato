@@ -385,6 +385,68 @@ async fn login_agent_change(install: bool) -> Result<(), String> {
     }
 }
 
+/// 맥북 덮개를 닫아도 잠자지 않기 (`pmset disablesleep`) 상태.
+/// - supported: macOS 노트북(내장 배터리 있음)일 때만
+/// - enabled: 지금 켜져 있는지
+#[tauri::command]
+fn lid_status() -> serde_json::Value {
+    #[cfg(target_os = "macos")]
+    {
+        let out = |args: &[&str]| {
+            Command::new("/usr/bin/pmset")
+                .args(args)
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default()
+        };
+        let laptop = out(&["-g", "batt"]).contains("InternalBattery");
+        let enabled = out(&["-g"]).lines().any(|l| l.split_whitespace().collect::<Vec<_>>() == ["SleepDisabled", "1"]);
+        serde_json::json!({ "supported": laptop, "enabled": enabled })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        serde_json::json!({ "supported": false, "enabled": false })
+    }
+}
+
+/// 덮개를 닫아도 잠자지 않기 켜기·끄기. 시스템 전체 전원 설정이라 관리자 암호 창으로 바꾼다.
+#[tauri::command]
+async fn lid_change(enable: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let cmd = format!("/usr/bin/pmset -a disablesleep {}", if enable { 1 } else { 0 });
+        let apple = format!(
+            "do shell script \"{cmd}\" with administrator privileges with prompt \"{}\"",
+            if load_settings().lang == "en" {
+                "Legato wants to change whether the Mac sleeps when the lid is closed."
+            } else {
+                "Legato 가 덮개를 닫았을 때 잠자기 설정을 바꾸려고 합니다."
+            }
+        );
+        let out = tauri::async_runtime::spawn_blocking(move || {
+            Command::new("/usr/bin/osascript").args(["-e", &apple]).output()
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(if err.contains("-128") {
+                tr("취소했습니다", "Cancelled")
+            } else {
+                format!("{}: {err}", tr("설정을 바꾸지 못했습니다", "Couldn't change the setting"))
+            })
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = enable;
+        Err(tr("macOS 노트북 전용 설정입니다", "This setting is for Mac laptops only"))
+    }
+}
+
 #[tauri::command]
 fn host_request_permissions() -> Result<serde_json::Value, String> {
     run_json("legato-host", &["request-permissions"])
@@ -678,6 +740,8 @@ fn main() {
             service_change,
             login_agent_status,
             login_agent_change,
+            lid_status,
+            lid_change,
             connect,
             forget_code,
             get_settings,

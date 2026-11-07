@@ -98,6 +98,12 @@ const ko = {
   'host.loginAgentOffDone': '로그인 화면 접속을 껐습니다.',
   'host.loginAgentStale': '앱이 업데이트되었거나 접속 코드가 바뀌었습니다. 로그인 화면 접속에도 반영하려면 다시 적용해 주세요.',
   'host.loginAgentReapply': '다시 적용',
+  'host.lid': '덮개를 닫아도 잠자지 않기 (맥북)',
+  'host.lidDesc':
+    '맥북 덮개를 닫아도 잠들지 않아 원격 접속을 계속 받을 수 있습니다. 시스템 전체 전원 설정(pmset disablesleep)이라 관리자 암호가 필요하고, Legato 를 꺼도 직접 끄기 전까지 유지됩니다. 외장 모니터와 전원을 연결해 두면 이 설정 없이도 덮개를 닫은 채 쓸 수 있습니다.',
+  'host.lidWarn': '켜져 있는 동안에는 가방에 넣어도 잠들지 않습니다. 과열과 배터리 소모에 주의하고, 들고 다닐 때는 꺼 주세요.',
+  'host.lidOnDone': '이제 덮개를 닫아도 잠들지 않습니다.',
+  'host.lidOffDone': '덮개를 닫으면 다시 잠듭니다.',
   'host.serviceStale': '앱이 업데이트되었습니다. 서비스도 새 버전을 쓰도록 다시 적용해 주세요.',
   'host.network':
     '외부 네트워크에서 접속하려면 공유기에서 UDP {port} 포트포워딩이 필요합니다. 가능하면 Tailscale · WireGuard 같은 VPN 안에서만 사용하시길 권장합니다.',
@@ -239,6 +245,12 @@ const en: Record<Key, string> = {
   'host.loginAgentOffDone': 'Login-window access is off.',
   'host.loginAgentStale': 'The app was updated or the access code changed. Reapply to use them at the login window too.',
   'host.loginAgentReapply': 'Reapply',
+  'host.lid': 'Stay awake with the lid closed (MacBook)',
+  'host.lidDesc':
+    "The MacBook won't sleep when you close the lid, so it keeps accepting remote connections. This is a system-wide power setting (pmset disablesleep), so it needs an administrator password and stays on until you turn it off, even if Legato is closed. With an external display and power connected, you can use the Mac with the lid closed without this setting.",
+  'host.lidWarn': "While this is on, the Mac won't sleep even in a bag. Watch out for heat and battery drain, and turn it off when you carry it around.",
+  'host.lidOnDone': "The Mac now stays awake with the lid closed.",
+  'host.lidOffDone': 'The Mac sleeps again when the lid is closed.',
   'host.serviceStale': 'The app was updated. Reapply so the service uses the new version too.',
   'host.network':
     'To connect from outside your network, forward UDP {port} on your router. Using it only inside a VPN such as Tailscale or WireGuard is recommended.',
