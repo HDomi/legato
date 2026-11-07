@@ -6,15 +6,15 @@
 use serde::{Deserialize, Serialize};
 
 /// 프로토콜 버전. 호환이 깨지는 변경마다 올린다.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// 뷰어 → 호스트 메시지.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
     /// 접속 직후 첫 메시지.
     Hello { version: u32, client_name: String },
-    /// 호스트 챌린지에 대한 응답 (HMAC).
-    AuthResponse { mac: [u8; 32] },
+    /// 호스트 챌린지에 대한 응답. 입력한 비밀 하나로 슬롯마다 HMAC 을 계산해 같은 순서로 보낸다.
+    AuthResponse { macs: Vec<[u8; 32]> },
     /// 이 디스플레이 영상을 보내 달라는 요청.
     StartStream { display_id: u32 },
     /// 입력 이벤트.
@@ -26,15 +26,16 @@ pub enum ClientMsg {
 /// 호스트 → 뷰어 메시지.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMsg {
-    /// 인증 챌린지. 뷰어는 salt 와 반복 횟수로 비밀번호에서 키를 만든다.
-    Challenge {
-        salt: [u8; 16],
-        iterations: u32,
-        nonce: [u8; 32],
-    },
+    /// 인증 챌린지. 슬롯마다 salt 가 다르다 (표시 비밀번호, 고정 접속 코드).
+    /// 슬롯 종류는 인증 전에는 알려주지 않는다.
+    Challenge { slots: Vec<AuthSlot>, nonce: [u8; 32] },
     /// 인증 성공. 호스트 이름과 디스플레이 목록을 알려준다.
     /// `server_mac` 은 호스트도 비밀번호를 안다는 증명 (위조 호스트 차단).
     AuthOk {
+        /// 맞은 슬롯 번호. `server_mac` 은 이 슬롯 키로 계산한다.
+        slot: u32,
+        /// 고정 접속 코드로 들어왔는지.
+        via_access_code: bool,
         server_mac: [u8; 32],
         host_name: String,
         displays: Vec<DisplayInfo>,
@@ -52,6 +53,16 @@ pub enum ServerMsg {
     /// 복구 불가능한 오류. 이 메시지 뒤 연결은 닫힌다.
     Error { message: String },
 }
+
+/// 인증 슬롯 하나 (PBKDF2 매개변수).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AuthSlot {
+    pub salt: [u8; 16],
+    pub iterations: u32,
+}
+
+/// 챌린지에 담을 수 있는 최대 슬롯 수 (뷰어가 PBKDF2 를 과하게 돌지 않게).
+pub const MAX_AUTH_SLOTS: usize = 4;
 
 /// 원격 디스플레이 정보.
 #[derive(Debug, Clone, Serialize, Deserialize)]

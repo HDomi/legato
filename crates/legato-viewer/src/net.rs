@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use legato_core::auth::{compute_mac, compute_server_mac, derive_key, mac_eq, channel_binding};
 use legato_core::framing::{read_msg, write_msg};
 use legato_core::known_hosts::KnownHosts;
-use legato_core::protocol::{ClientMsg, DisplayInfo, PROTOCOL_VERSION, ServerMsg};
+use legato_core::protocol::{ClientMsg, DisplayInfo, MAX_AUTH_SLOTS, PROTOCOL_VERSION, ServerMsg};
 
 /// 인증까지 끝난 세션.
 pub struct Session {
@@ -16,6 +16,8 @@ pub struct Session {
     pub recv: quinn::RecvStream,
     pub host_name: String,
     pub displays: Vec<DisplayInfo>,
+    /// 고정 접속 코드로 인증했는지.
+    pub via_access_code: bool,
 }
 
 /// 접속하고 비밀번호로 인증한다.
@@ -38,27 +40,36 @@ pub async fn connect(addr: SocketAddr, host_key: &str, password: &str, accept_ne
 
     write_msg(&mut send, &ClientMsg::Hello { version: PROTOCOL_VERSION, client_name: client_name() }).await?;
     let challenge: ServerMsg = read_msg(&mut recv).await?.context("호스트가 연결을 닫음")?;
-    let (salt, iterations, nonce) = match challenge {
-        ServerMsg::Challenge { salt, iterations, nonce } => (salt, iterations, nonce),
+    let (slots, nonce) = match challenge {
+        ServerMsg::Challenge { slots, nonce } => (slots, nonce),
         ServerMsg::Error { message } => bail!("{message}"),
         other => bail!("예상하지 못한 메시지: {other:?}"),
     };
-    if !(10_000..=10_000_000).contains(&iterations) {
-        bail!("호스트가 이상한 PBKDF2 반복 횟수를 보냄: {iterations}");
+    if slots.is_empty() || slots.len() > MAX_AUTH_SLOTS {
+        bail!("호스트가 이상한 인증 슬롯 수를 보냄: {}", slots.len());
+    }
+    if let Some(s) = slots.iter().find(|s| !(10_000..=10_000_000).contains(&s.iterations)) {
+        bail!("호스트가 이상한 PBKDF2 반복 횟수를 보냄: {}", s.iterations);
     }
     let binding = channel_binding(&conn)?;
     let password = password.to_string();
+    // 입력한 비밀 하나로 슬롯마다 키를 만든다 (표시 비밀번호인지 접속 코드인지 몰라도 된다).
     // PBKDF2 는 CPU 를 오래 쓰므로 블로킹 스레드에서 돌린다.
-    let key = tokio::task::spawn_blocking(move || derive_key(&password, &salt, iterations)).await?;
-    write_msg(&mut send, &ClientMsg::AuthResponse { mac: compute_mac(&key, &nonce, &binding) }).await?;
+    let keys: Vec<[u8; 32]> = tokio::task::spawn_blocking(move || {
+        slots.iter().map(|s| derive_key(&password, &s.salt, s.iterations)).collect()
+    })
+    .await?;
+    let macs = keys.iter().map(|k| compute_mac(k, &nonce, &binding)).collect();
+    write_msg(&mut send, &ClientMsg::AuthResponse { macs }).await?;
 
     let reply: ServerMsg = read_msg(&mut recv).await?.context("호스트가 인증 중 연결을 닫음")?;
-    let (host_name, displays) = match reply {
-        ServerMsg::AuthOk { server_mac, host_name, displays } => {
-            if !mac_eq(&server_mac, &compute_server_mac(&key, &nonce, &binding)) {
+    let (host_name, displays, via_access_code) = match reply {
+        ServerMsg::AuthOk { slot, via_access_code, server_mac, host_name, displays } => {
+            let key = keys.get(slot as usize).context("호스트가 없는 슬롯 번호를 보냄")?;
+            if !mac_eq(&server_mac, &compute_server_mac(key, &nonce, &binding)) {
                 bail!("호스트가 비밀번호를 증명하지 못했어. 가짜 호스트일 수 있어서 연결을 끊었어");
             }
-            (host_name, displays)
+            (host_name, displays, via_access_code)
         }
         ServerMsg::AuthFailed { reason } => bail!("인증 실패: {reason}"),
         ServerMsg::Error { message } => bail!("{message}"),
@@ -67,7 +78,7 @@ pub async fn connect(addr: SocketAddr, host_key: &str, password: &str, accept_ne
     if expected.as_deref() != Some(c.fingerprint.as_str()) {
         known.set(host_key, &c.fingerprint)?;
     }
-    Ok(Session { endpoint: c.endpoint, conn, send, recv, host_name, displays })
+    Ok(Session { endpoint: c.endpoint, conn, send, recv, host_name, displays, via_access_code })
 }
 
 fn client_name() -> String {

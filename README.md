@@ -6,7 +6,12 @@ Mac ↔ Mac, Windows ↔ Windows, Mac ↔ Windows 원격 화면·조작. 원격�
 
 - **Mac 뷰어**: 원격 화면이 네이티브 전체화면(별도 Space)으로 열린다. Mission Control 에서 Space 로 오간다.
 - **Windows 뷰어**: 일반 창.
-- **보안**: QUIC(TLS 1.3) 암호화, 호스트 인증서 지문 고정(처음 접속 때 기억, 바뀌면 거부), 비밀번호는 네트워크로 보내지 않는 상호 챌린지 인증(PBKDF2 + HMAC + TLS 채널 바인딩), IP 별 5회 실패 시 잠금.
+- **두 가지 자격 증명**
+  - **표시 비밀번호**: 호스트 화면에 보이는 임시 비밀번호. 기본으로 켤 때마다 바뀐다. 옆 사람에게 알려주는 용도.
+  - **고정 접속 코드**: 나만 아는 비밀(10자 이상). 호스트에는 해시만 저장되고, 직접 바꾸기 전에는 바뀌지 않는다. 뷰어에서 한 번 접속하며 키체인(Windows 는 자격 증명 관리자)에 저장하면 주소록에서 클릭 한 번으로 접속된다.
+  - 둘 중 하나만 맞으면 들어온다. 표시 비밀번호를 꺼서 접속 코드로만 들어오게 할 수도 있다.
+- **무인 접속**: 로그인 시 실행, 앱이 켜지면 바로 접속 대기, 대기 중 잠자기 방지(`caffeinate -i`), 접속 시 디스플레이 깨우기. 새로 인증한 접속이 기존 세션을 넘겨받아 네트워크가 끊겼다 다시 붙어도 바로 들어온다.
+- **보안**: QUIC(TLS 1.3) 암호화, 호스트 인증서 지문 고정(처음 접속 때 기억, 바뀌면 거부), 비밀번호·접속 코드는 네트워크로 보내지 않는 상호 챌린지 인증(PBKDF2 + HMAC + TLS 채널 바인딩), IP 별 5회 실패 시 잠금.
 
 > 현재 단계: **P1 (Mac 호스트 + Mac/Windows 뷰어 MVP)**. Windows 호스트, 멀티 모니터, UAC·로그인 화면은 다음 단계. 아래 [로드맵](#로드맵) 참고.
 
@@ -34,21 +39,28 @@ macOS 호스트는 **화면 기록**과 **손쉬운 사용** 권한이 필요하
 
 ```bash
 # 호스트
-legato-host set-password --generate   # 비밀번호 새로 만들기 (원문은 저장 안 함)
-legato-host serve                     # 대기 (--port, --max-width 1920, --fps 30, --bitrate 8000000)
+legato-host set-password --generate   # 표시 비밀번호 새로 만들기
+echo '나만-아는-긴-코드' | legato-host set-access-code   # 고정 접속 코드 (해시만 저장)
+legato-host clear-access-code
+legato-host configure --rotate-display-password=false --allow-display-password=false
+legato-host serve                     # 대기 (--port, --max-width 1920, --fps 30, --bitrate 8000000, --allow-sleep)
 legato-host info                      # 주소, 지문, 권한 상태
 legato-host request-permissions       # macOS 권한 요청 창 띄우기
 
-# 뷰어 (비밀번호는 LEGATO_PASSWORD 환경 변수 또는 프롬프트)
+# 뷰어 (표시 비밀번호 또는 접속 코드를 LEGATO_PASSWORD 환경 변수나 프롬프트로)
 legato-viewer 192.168.0.10            # Mac 은 전체화면 Space, --windowed 로 창 모드
 legato-viewer 192.168.0.10 --headless --frames 120 --dump frame.png   # 창 없이 FPS·지연 측정
 ```
 
 뷰어 창 단축키: Mac 에서 `⌘Q` 는 뷰어 종료(원격으로 전달되지 않음), `⌃⌘F` 는 전체화면 전환.
 
-### 외부에서 접속
+### 회사에서 집 Mac 에 접속 (무인 접속)
 
-공유기에서 UDP `47820` 포트포워딩이 필요하다. **원격 제어 포트를 인터넷에 그대로 여는 건 위험하다.** 가능하면 Tailscale·WireGuard 같은 VPN 안에서만 쓴다.
+1. 집 Mac: **이 컴퓨터 열기** 탭에서 고정 접속 코드 설정, "로그인하면 Legato 실행"·"켜지면 바로 접속 대기" 켜기, 화면 기록·손쉬운 사용 권한 허용.
+2. 회사 컴퓨터: 집 주소와 접속 코드로 한 번 접속하면서 "키체인에 저장" 체크. 다음부터 주소록의 **바로 접속**.
+3. 외부에서 들어오려면 공유기에서 UDP `47820` 포트포워딩이 필요하다. **원격 제어 포트를 인터넷에 그대로 여는 건 위험하다.** 가능하면 Tailscale·WireGuard 같은 VPN 안에서만 쓰고, 접속 코드는 길고 다른 곳에 쓰지 않는 값으로 정한다.
+
+아직 안 되는 것: 로그아웃 상태·재부팅 직후(로그인 전)에는 접속할 수 없다 (P5). 잠금 화면 상태의 캡처·입력은 검증 전이다.
 
 ## 개발
 

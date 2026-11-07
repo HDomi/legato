@@ -47,6 +47,28 @@ fn run_json(name: &str, args: &[&str]) -> Result<serde_json::Value, String> {
     serde_json::from_str(line).map_err(|e| format!("출력 해석 실패: {e}: {line}"))
 }
 
+/// 도우미를 실행하면서 표준 입력으로 비밀 값을 넘긴다 (명령줄 인자는 ps 에 보이므로 쓰지 않는다).
+fn run_json_stdin(name: &str, args: &[&str], input: &str) -> Result<serde_json::Value, String> {
+    use std::io::Write;
+    let mut child = no_window(
+        Command::new(helper(name)?).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()),
+    )
+    .spawn()
+    .map_err(|e| e.to_string())?;
+    child
+        .stdin
+        .take()
+        .expect("piped")
+        .write_all(format!("{input}\n").as_bytes())
+        .map_err(|e| e.to_string())?;
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().trim_start_matches("Error: ").to_string());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    serde_json::from_str(text.lines().last().unwrap_or("{}")).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn host_info() -> Result<serde_json::Value, String> {
     run_json("legato-host", &["info", "--json"])
@@ -66,11 +88,28 @@ fn host_running(proc: State<HostProc>) -> bool {
 }
 
 /// 자식 프로세스의 출력 한 줄씩을 프론트로 보낸다.
-fn pipe_lines(app: AppHandle, reader: impl std::io::Read + Send + 'static, event: &'static str, tag: String) {
+/// 뷰어가 인증에 성공했을 때 `connected` 이벤트 데이터로 한 번 불리는 콜백.
+type OnConnected = Box<dyn FnOnce(&serde_json::Value) + Send>;
+
+/// `on_connected` 는 뷰어가 인증까지 성공했을 때 한 번 불린다.
+fn pipe_lines(
+    app: AppHandle,
+    reader: impl std::io::Read + Send + 'static,
+    event: &'static str,
+    tag: String,
+    mut on_connected: Option<OnConnected>,
+) {
     std::thread::spawn(move || {
         for line in BufReader::new(reader).lines().map_while(Result::ok) {
             let payload = match serde_json::from_str::<serde_json::Value>(&line) {
-                Ok(v) if v.get("event").is_some() => serde_json::json!({ "tag": tag, "kind": "event", "value": v }),
+                Ok(v) if v.get("event").is_some() => {
+                    if v["event"] == "connected"
+                        && let Some(f) = on_connected.take()
+                    {
+                        f(&v["data"]);
+                    }
+                    serde_json::json!({ "tag": tag, "kind": "event", "value": v })
+                }
                 // 색상 코드는 지우고 사람용 로그로 보낸다.
                 _ => serde_json::json!({ "tag": tag, "kind": "log", "value": strip_ansi(&line) }),
             };
@@ -114,8 +153,8 @@ fn host_start(app: AppHandle, proc: State<HostProc>) -> Result<(), String> {
     )
     .spawn()
     .map_err(|e| format!("호스트 실행 실패: {e}"))?;
-    pipe_lines(app.clone(), child.stdout.take().expect("piped"), "host", "stdout".into());
-    pipe_lines(app, child.stderr.take().expect("piped"), "host", "stderr".into());
+    pipe_lines(app.clone(), child.stdout.take().expect("piped"), "host", "stdout".into(), None);
+    pipe_lines(app, child.stderr.take().expect("piped"), "host", "stderr".into(), None);
     *g = Some(child);
     Ok(())
 }
@@ -128,11 +167,35 @@ fn host_stop(proc: State<HostProc>) {
     }
 }
 
-/// 새 비밀번호를 만든다. 호스트가 켜져 있으면 다시 시작해야 적용된다.
+/// 표시 비밀번호를 새로 만든다. 호스트가 켜져 있으면 다시 시작해야 적용된다.
 #[tauri::command]
 fn host_reset_password() -> Result<String, String> {
     let v = run_json("legato-host", &["set-password", "--generate", "--json"])?;
     v.get("password").and_then(|p| p.as_str()).map(str::to_string).ok_or("비밀번호 생성 실패".into())
+}
+
+/// 고정 접속 코드를 설정한다. 호스트에는 해시만 저장된다.
+#[tauri::command]
+fn host_set_access_code(code: String) -> Result<(), String> {
+    run_json_stdin("legato-host", &["set-access-code"], &code).map(|_| ())
+}
+
+#[tauri::command]
+fn host_clear_access_code() -> Result<(), String> {
+    run_json("legato-host", &["clear-access-code"]).map(|_| ())
+}
+
+#[tauri::command]
+fn host_configure(rotate: Option<bool>, allow_display: Option<bool>) -> Result<(), String> {
+    let mut args = vec!["configure".to_string()];
+    if let Some(v) = rotate {
+        args.push(format!("--rotate-display-password={v}"));
+    }
+    if let Some(v) = allow_display {
+        args.push(format!("--allow-display-password={v}"));
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_json("legato-host", &refs).map(|_| ())
 }
 
 #[tauri::command]
@@ -140,12 +203,50 @@ fn host_request_permissions() -> Result<serde_json::Value, String> {
     run_json("legato-host", &["request-permissions"])
 }
 
-/// 뷰어를 띄워 원격 컴퓨터에 접속한다. 비밀번호는 명령줄 대신 환경 변수로 넘긴다 (ps 에 안 보이게).
+/// 키체인(macOS) / 자격 증명 관리자(Windows) 항목. 주소마다 하나.
+fn keychain(address: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new("com.hdomi.legato", address).map_err(|e| e.to_string())
+}
+
+fn saved_code(address: &str) -> Result<Option<String>, String> {
+    match keychain(address)?.get_password() {
+        Ok(p) => Ok(Some(p)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("키체인 읽기 실패: {e}")),
+    }
+}
+
 #[tauri::command]
-fn connect(app: AppHandle, id: String, address: String, password: String, windowed: bool, accept_new_fingerprint: bool) -> Result<(), String> {
+fn forget_code(address: String) -> Result<(), String> {
+    match keychain(&address)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// 뷰어를 띄워 원격 컴퓨터에 접속한다. 비밀번호는 명령줄 대신 환경 변수로 넘긴다 (ps 에 안 보이게).
+/// - `use_saved`: 키체인에 저장한 접속 코드로 접속 (입력값 무시)
+/// - `remember`: 접속에 성공하면 입력값을 키체인에 저장 (고정 접속 코드용)
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn connect(
+    app: AppHandle,
+    id: String,
+    address: String,
+    password: String,
+    use_saved: bool,
+    remember: bool,
+    windowed: bool,
+    accept_new_fingerprint: bool,
+) -> Result<(), String> {
+    let secret = if use_saved {
+        saved_code(&address)?.ok_or("저장된 접속 코드가 없어")?
+    } else {
+        password
+    };
     let mut cmd = Command::new(helper("legato-viewer")?);
     cmd.arg(&address)
-        .env("LEGATO_PASSWORD", password)
+        .env("LEGATO_PASSWORD", &secret)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -156,8 +257,25 @@ fn connect(app: AppHandle, id: String, address: String, password: String, window
         cmd.arg("--accept-new-fingerprint");
     }
     let mut child = no_window(&mut cmd).spawn().map_err(|e| format!("뷰어 실행 실패: {e}"))?;
-    pipe_lines(app.clone(), child.stdout.take().expect("piped"), "viewer", id.clone());
-    pipe_lines(app, child.stderr.take().expect("piped"), "viewer", id);
+    // 고정 접속 코드로 인증에 성공한 경우에만 저장한다 (틀린 값이나 매번 바뀌는 표시 비밀번호는 저장하지 않게).
+    let on_connected: Option<OnConnected> = if remember && !use_saved {
+        let (app2, addr, id2) = (app.clone(), address.clone(), id.clone());
+        Some(Box::new(move |data: &serde_json::Value| {
+            if data["via_access_code"] != true {
+                let _ = app2.emit(
+                    "code-saved",
+                    serde_json::json!({ "tag": id2, "address": addr, "error": "표시 비밀번호로 접속해서 저장하지 않았어 (고정 접속 코드만 저장)" }),
+                );
+                return;
+            }
+            let result = keychain(&addr).and_then(|e| e.set_password(&secret).map_err(|e| e.to_string()));
+            let _ = app2.emit("code-saved", serde_json::json!({ "tag": id2, "address": addr, "error": result.err() }));
+        }))
+    } else {
+        None
+    };
+    pipe_lines(app.clone(), child.stdout.take().expect("piped"), "viewer", id.clone(), on_connected);
+    pipe_lines(app, child.stderr.take().expect("piped"), "viewer", id, None);
     // 종료 코드를 거둬 좀비 프로세스가 남지 않게 한다.
     std::thread::spawn(move || {
         let _ = child.wait();
@@ -165,11 +283,61 @@ fn connect(app: AppHandle, id: String, address: String, password: String, window
     Ok(())
 }
 
-/// 주소록 항목. 비밀번호는 저장하지 않는다.
+/// 앱 설정 (`app.json`).
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+struct AppSettings {
+    /// 앱이 켜지면 호스트도 자동으로 켠다 (회사에서 집 Mac 에 접속하는 용도).
+    auto_host: bool,
+}
+
+fn settings_path() -> Result<PathBuf, String> {
+    Ok(legato_core::paths::config_dir().map_err(|e| e.to_string())?.join("app.json"))
+}
+
+fn load_settings() -> AppSettings {
+    settings_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle) -> serde_json::Value {
+    use tauri_plugin_autostart::ManagerExt;
+    let s = load_settings();
+    serde_json::json!({
+        "auto_host": s.auto_host,
+        "launch_at_login": app.autolaunch().is_enabled().unwrap_or(false),
+    })
+}
+
+#[tauri::command]
+fn set_settings(app: AppHandle, auto_host: Option<bool>, launch_at_login: Option<bool>) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    if let Some(v) = auto_host {
+        let mut s = load_settings();
+        s.auto_host = v;
+        let data = serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?;
+        legato_core::paths::write_private(&settings_path()?, data.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    if let Some(v) = launch_at_login {
+        let al = app.autolaunch();
+        if v { al.enable() } else { al.disable() }.map_err(|e| format!("로그인 시 실행 설정 실패: {e}"))?;
+    }
+    Ok(())
+}
+
+/// 주소록 항목. 비밀 값은 여기 저장하지 않는다 (키체인에만).
+/// `saved_code` 는 키체인에 접속 코드를 넣어 뒀는지 표시만 한다. 앱을 켤 때 키체인을 읽으면
+/// 서명이 바뀐 직후 macOS 가 키체인 접근 확인 창을 띄우므로, 실제로 접속할 때만 읽는다.
 #[derive(Serialize, Deserialize, Clone)]
 struct Entry {
     name: String,
     address: String,
+    #[serde(default)]
+    saved_code: bool,
 }
 
 fn book_path() -> Result<PathBuf, String> {
@@ -192,15 +360,37 @@ fn save_addresses(entries: Vec<Entry>) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        // 로그인 시 실행되면 `--autostart` 인자가 붙는다 (창을 최소화해서 시작).
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .manage(HostProc::default())
+        .setup(|app| {
+            if load_settings().auto_host {
+                let handle = app.handle().clone();
+                if let Err(e) = host_start(handle.clone(), handle.state::<HostProc>()) {
+                    eprintln!("호스트 자동 시작 실패: {e}");
+                }
+            }
+            if std::env::args().any(|a| a == "--autostart")
+                && let Some(w) = app.get_webview_window("main")
+            {
+                let _ = w.minimize();
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             host_info,
             host_running,
             host_start,
             host_stop,
             host_reset_password,
+            host_set_access_code,
+            host_clear_access_code,
+            host_configure,
             host_request_permissions,
             connect,
+            forget_code,
+            get_settings,
+            set_settings,
             load_addresses,
             save_addresses
         ])

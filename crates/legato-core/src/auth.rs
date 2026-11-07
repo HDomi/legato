@@ -19,6 +19,9 @@ type HmacSha256 = Hmac<Sha256>;
 /// PBKDF2 반복 횟수 기본값.
 pub const DEFAULT_ITERATIONS: u32 = 200_000;
 
+/// 고정 접속 코드 최소 길이. 바뀌지 않는 비밀이라 표시 비밀번호보다 길게 요구한다.
+pub const MIN_ACCESS_CODE_LEN: usize = 10;
+
 const MAC_DOMAIN: &[u8] = b"legato-auth-v1";
 const SERVER_MAC_DOMAIN: &[u8] = b"legato-auth-v1-server";
 const EXPORTER_LABEL: &[u8] = b"EXPORTER-legato-auth";
@@ -46,6 +49,11 @@ impl PasswordRecord {
     /// 뷰어가 보낸 MAC 이 맞는지 상수 시간으로 비교한다.
     pub fn verify(&self, nonce: &[u8; 32], binding: &[u8; 32], mac: &[u8; 32]) -> bool {
         mac_eq(&compute_mac(&self.key, nonce, binding), mac)
+    }
+
+    /// 챌린지 슬롯 정보.
+    pub fn slot(&self) -> crate::protocol::AuthSlot {
+        crate::protocol::AuthSlot { salt: self.salt, iterations: self.iterations }
     }
 
     /// 호스트 증명 MAC.
@@ -90,6 +98,21 @@ pub fn channel_binding(conn: &quinn::Connection) -> anyhow::Result<[u8; 32]> {
     conn.export_keying_material(&mut out, EXPORTER_LABEL, b"")
         .map_err(|_| anyhow::anyhow!("TLS exporter 값을 만들 수 없음"))?;
     Ok(out)
+}
+
+/// 슬롯 목록과 뷰어 응답을 비교해 맞은 슬롯 번호를 돌려준다.
+/// 응답 시간으로 어느 슬롯인지 새지 않게 모든 슬롯을 끝까지 검사한다.
+pub fn match_slot(records: &[&PasswordRecord], nonce: &[u8; 32], binding: &[u8; 32], macs: &[[u8; 32]]) -> Option<usize> {
+    if macs.len() != records.len() {
+        return None;
+    }
+    let mut found = None;
+    for (i, (rec, mac)) in records.iter().zip(macs).enumerate() {
+        if rec.verify(nonce, binding, mac) && found.is_none() {
+            found = Some(i);
+        }
+    }
+    found
 }
 
 /// 새 nonce 를 만든다.
@@ -200,6 +223,23 @@ mod tests {
         assert!(!rec.verify(&nonce, &[8u8; 32], &good));
         // 호스트 증명은 뷰어 응답과 달라야 한다.
         assert_ne!(rec.server_proof(&nonce, &binding), good);
+    }
+
+    #[test]
+    fn 여러_슬롯_중_맞는_슬롯_찾기() {
+        let display = PasswordRecord::new("abcd-efgh-jkmn");
+        let code = PasswordRecord::new("my-secret-code-123");
+        let nonce = new_nonce();
+        let binding = [3u8; 32];
+        let recs = [&display, &code];
+        let macs_for = |secret: &str| -> Vec<[u8; 32]> {
+            recs.iter().map(|r| compute_mac(&derive_key(secret, &r.salt, r.iterations), &nonce, &binding)).collect()
+        };
+        assert_eq!(match_slot(&recs, &nonce, &binding, &macs_for("abcd-efgh-jkmn")), Some(0));
+        assert_eq!(match_slot(&recs, &nonce, &binding, &macs_for("my-secret-code-123")), Some(1));
+        assert_eq!(match_slot(&recs, &nonce, &binding, &macs_for("nope")), None);
+        // 개수가 다르면 실패.
+        assert_eq!(match_slot(&recs, &nonce, &binding, &macs_for("abcd-efgh-jkmn")[..1]), None);
     }
 
     #[test]

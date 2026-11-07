@@ -56,3 +56,11 @@ button.link { background: none; border: none; padding: 0; text-align: left; }
 .dot.connected { background: #4ade80; }
 .log { max-height: 220px; overflow: auto; font-size: 11px; color: var(--muted); white-space: pre-wrap; }
 [hidden] { display: none !important; }
+.notice { border-color: rgba(74, 222, 128, 0.4); cursor: pointer; }
+.big { font-size: 18px; letter-spacing: 0.5px; }
+.card label.check { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.card h3 + p { margin-top: 0; }
+.tag { margin-left: 8px; font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(124, 156, 255, 0.18); color: var(--accent); }
+/* 강조 버튼은 마우스를 올려도 색을 유지한다 (일반 hover 규칙이 더 구체적이라 덮어쓰지 않게). */
+button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.12); }
+button.danger:hover:not(:disabled) { background: rgba(255, 107, 107, 0.12); }

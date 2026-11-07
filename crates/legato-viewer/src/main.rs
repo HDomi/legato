@@ -66,6 +66,17 @@ fn emit(event: &str, data: serde_json::Value) {
     let _ = out.flush();
 }
 
+/// QUIC 종료 이유를 사람이 읽을 문장으로 바꾼다.
+fn describe_close(e: &quinn::ConnectionError) -> String {
+    match e {
+        quinn::ConnectionError::ApplicationClosed(c) if c.reason.as_ref() == b"replaced" => {
+            "다른 곳에서 이 호스트에 접속해서 이 연결은 끊겼어".into()
+        }
+        quinn::ConnectionError::TimedOut => "호스트 응답이 끊겼어 (네트워크 확인)".into(),
+        other => format!("연결 끊김: {other}"),
+    }
+}
+
 fn resolve(host: &str) -> Result<(SocketAddr, String)> {
     let with_port = if host.parse::<SocketAddr>().is_ok() || host.rsplit_once(':').is_some_and(|(h, p)| !h.contains(':') && p.parse::<u16>().is_ok()) {
         host.to_string()
@@ -86,7 +97,7 @@ fn password() -> Result<String> {
     if let Ok(p) = std::env::var("LEGATO_PASSWORD") {
         return Ok(p);
     }
-    rpassword::prompt_password("비밀번호: ").context("비밀번호 입력 실패")
+    rpassword::prompt_password("비밀번호 또는 접속 코드: ").context("비밀번호 입력 실패")
 }
 
 fn main() {
@@ -120,7 +131,10 @@ fn run(cli: Cli) -> Result<()> {
             .context("호스트에 디스플레이가 없음")?,
     };
     tracing::info!("{} 에 접속. 디스플레이 {} ({}x{})", session.host_name, target.id, target.width, target.height);
-    emit("connected", serde_json::json!({ "host": session.host_name, "displays": session.displays }));
+    emit(
+        "connected",
+        serde_json::json!({ "host": session.host_name, "displays": session.displays, "via_access_code": session.via_access_code }),
+    );
 
     let net::Session { endpoint, conn, mut send, mut recv, host_name, .. } = session;
 
@@ -148,7 +162,10 @@ fn run(cli: Cli) -> Result<()> {
     }
 
     if cli.headless {
-        return run_headless(&rt, conn, recv, pkt_rx, backlog, ctl_tx, cli.frames, cli.dump);
+        let r = run_headless(&rt, conn, recv, pkt_rx, backlog, ctl_tx, cli.frames, cli.dump);
+        // 종료 신호가 호스트에 전달될 때까지 잠깐 기다린다 (안 그러면 호스트가 시간 초과까지 세션을 붙잡음).
+        rt.block_on(async { tokio::time::timeout(Duration::from_secs(1), endpoint.wait_idle()).await.ok() });
+        return r;
     }
 
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
@@ -173,9 +190,12 @@ fn run(cli: Cli) -> Result<()> {
                         Ok(Some(ServerMsg::Error { message })) => break message,
                         Ok(Some(other)) => tracing::debug!("무시한 메시지: {other:?}"),
                         Ok(None) => break "호스트가 연결을 닫았어".to_string(),
-                        Err(e) => break format!("연결 끊김: {e:#}"),
+                        Err(e) => break match conn.close_reason() {
+                            Some(reason) => describe_close(&reason),
+                            None => format!("연결 끊김: {e:#}"),
+                        },
                     },
-                    e = conn.closed() => break format!("연결 끊김: {e}"),
+                    e = conn.closed() => break describe_close(&e),
                 }
             };
             let _ = proxy.send_event(UserEvent::Closed(reason));
@@ -257,6 +277,10 @@ fn run_headless(
             }
             Err(_) => break,
         }
+    }
+    // 호스트 쪽에서 먼저 끊었으면 이유를 알려준다.
+    if let Some(reason) = conn.close_reason() {
+        eprintln!("알림: {}", describe_close(&reason));
     }
     conn.close(0u32.into(), b"bye");
     let Some(last) = last else { bail!("30초 안에 디코딩된 프레임이 없음") };

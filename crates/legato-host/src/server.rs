@@ -1,13 +1,13 @@
 //! 접속 수락, 인증, 영상 송출, 입력 처리.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use legato_core::auth::{AuthLimiter, PasswordRecord, channel_binding, new_nonce};
+use legato_core::auth::{AuthLimiter, PasswordRecord, channel_binding, match_slot, new_nonce};
 use legato_core::codec::H264Encoder;
 use legato_core::framing::{read_msg, write_msg};
 use legato_core::protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg, VideoPacket};
@@ -18,25 +18,32 @@ use crate::platform::{self, CaptureOptions};
 
 /// 서버 전체가 공유하는 상태.
 pub struct ServerState {
-    pub password: PasswordRecord,
+    /// 표시 비밀번호 (허용된 경우만).
+    pub display: Option<PasswordRecord>,
+    /// 고정 접속 코드 (설정된 경우만).
+    pub access_code: Option<PasswordRecord>,
     pub max_width: u32,
     pub fps: u32,
     pub bitrate: u32,
     pub host_name: String,
     limiter: Mutex<AuthLimiter>,
-    busy: AtomicBool,
+    /// 지금 화면을 보고 있는 세션 (번호, 연결). 한 번에 하나만.
+    current: Mutex<Option<(u64, quinn::Connection)>>,
+    next_id: AtomicU64,
 }
 
 impl ServerState {
-    pub fn new(password: PasswordRecord, max_width: u32, fps: u32, bitrate: u32) -> Self {
+    pub fn new(display: Option<PasswordRecord>, access_code: Option<PasswordRecord>, max_width: u32, fps: u32, bitrate: u32) -> Self {
         Self {
-            password,
+            display,
+            access_code,
             max_width,
             fps,
             bitrate,
             host_name: host_name(),
             limiter: Mutex::new(AuthLimiter::default()),
-            busy: AtomicBool::new(false),
+            current: Mutex::new(None),
+            next_id: AtomicU64::new(1),
         }
     }
 }
@@ -71,13 +78,22 @@ pub async fn run(endpoint: quinn::Endpoint, state: Arc<ServerState>) -> Result<(
     Ok(())
 }
 
-/// 세션이 끝나면 busy 를 푼다.
-struct BusyGuard<'a>(&'a AtomicBool);
-impl Drop for BusyGuard<'_> {
+/// 세션이 끝나면 자기 자리를 비운다. 이미 다른 세션이 넘겨받았으면 건드리지 않는다.
+struct SessionGuard<'a> {
+    state: &'a ServerState,
+    id: u64,
+}
+impl Drop for SessionGuard<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        let mut cur = self.state.current.lock().expect("뮤텍스");
+        if cur.as_ref().is_some_and(|(id, _)| *id == self.id) {
+            *cur = None;
+        }
     }
 }
+
+/// 기존 세션을 닫을 때 쓰는 QUIC 종료 코드와 이유. 뷰어가 이 값으로 안내 문구를 고른다.
+pub const CLOSE_REPLACED: u32 = 6;
 
 async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc<ServerState>) -> Result<()> {
     let ip = peer.ip();
@@ -112,36 +128,49 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         bail!("프로토콜 버전 불일치");
     }
 
-    // 2. 챌린지-응답
+    // 2. 챌린지-응답. 슬롯 순서: 표시 비밀번호(허용 시), 고정 접속 코드(설정 시).
+    let mut records: Vec<&PasswordRecord> = Vec::new();
+    let mut is_code: Vec<bool> = Vec::new();
+    if let Some(r) = &state.display {
+        records.push(r);
+        is_code.push(false);
+    }
+    if let Some(r) = &state.access_code {
+        records.push(r);
+        is_code.push(true);
+    }
     let nonce = new_nonce();
     let binding = channel_binding(&conn)?;
-    write_msg(&mut send, &ServerMsg::Challenge { salt: state.password.salt, iterations: state.password.iterations, nonce }).await?;
+    let slots = records.iter().map(|r| r.slot()).collect();
+    write_msg(&mut send, &ServerMsg::Challenge { slots, nonce }).await?;
     let resp: ClientMsg = tokio::time::timeout(Duration::from_secs(30), read_msg(&mut recv))
         .await
         .context("인증 응답 대기 시간 초과")??
         .context("인증 응답 전에 스트림 종료")?;
-    let ClientMsg::AuthResponse { mac } = resp else { bail!("인증 응답이 아님") };
-    if !state.password.verify(&nonce, &binding, &mac) {
+    let ClientMsg::AuthResponse { macs } = resp else { bail!("인증 응답이 아님") };
+    let matched = match_slot(&records, &nonce, &binding, &macs);
+    let Some(slot) = matched else {
         state.limiter.lock().expect("뮤텍스").record_failure(ip);
         tracing::warn!("{peer} ({client_name}) 비밀번호 틀림");
         emit("auth_failed", serde_json::json!({ "peer": peer.to_string() }));
-        write_msg(&mut send, &ServerMsg::AuthFailed { reason: "비밀번호가 틀렸어".into() }).await?;
+        write_msg(&mut send, &ServerMsg::AuthFailed { reason: "비밀번호 또는 접속 코드가 틀렸어".into() }).await?;
         send.finish().ok();
         // 메시지가 전달될 시간을 잠깐 준다.
         tokio::time::sleep(Duration::from_millis(200)).await;
         conn.close(3u32.into(), b"auth");
         return Ok(());
-    }
+    };
     state.limiter.lock().expect("뮤텍스").record_success(ip);
+    let via_access_code = is_code[slot];
 
-    if state.busy.swap(true, Ordering::SeqCst) {
-        write_msg(&mut send, &ServerMsg::Error { message: "다른 뷰어가 이미 접속 중이야".into() }).await?;
-        send.finish().ok();
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        conn.close(4u32.into(), b"busy");
-        return Ok(());
+    // 인증을 통과한 새 접속이 기존 세션을 넘겨받는다 (네트워크가 끊겼다 다시 붙는 경우 바로 들어오게).
+    let id = state.next_id.fetch_add(1, Ordering::SeqCst);
+    let previous = state.current.lock().expect("뮤텍스").replace((id, conn.clone()));
+    if let Some((_, old)) = previous {
+        tracing::info!("{peer} 가 기존 세션 ({}) 을 넘겨받음", old.remote_address());
+        old.close(CLOSE_REPLACED.into(), b"replaced");
     }
-    let _busy = BusyGuard(&state.busy);
+    let _session = SessionGuard { state: &state, id };
 
     // ScreenCaptureKit 호출은 블로킹이고, 권한 확인 창이 떠 있으면 응답이 올 때까지 멈춘다.
     // tokio 작업 스레드를 막지 않게 블로킹 스레드에서 돌리고 시간 제한을 둔다.
@@ -158,12 +187,17 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         }
     };
     write_msg(&mut send, &ServerMsg::AuthOk {
-        server_mac: state.password.server_proof(&nonce, &binding),
+        slot: slot as u32,
+        via_access_code,
+        server_mac: records[slot].server_proof(&nonce, &binding),
         host_name: state.host_name.clone(),
         displays: displays.clone(),
     }).await?;
-    tracing::info!("{peer} ({client_name}) 인증 성공");
-    emit("session_started", serde_json::json!({ "peer": peer.to_string(), "client": client_name }));
+    let how = if via_access_code { "고정 접속 코드" } else { "표시 비밀번호" };
+    tracing::info!("{peer} ({client_name}) 인증 성공 ({how})");
+    emit("session_started", serde_json::json!({ "peer": peer.to_string(), "client": client_name, "via_access_code": via_access_code }));
+    // 잠든 디스플레이를 깨운다 (사용자 활동으로 알림).
+    platform::wake_display();
 
     if !platform::accessibility_trusted() {
         write_msg(&mut send, &ServerMsg::Notice {

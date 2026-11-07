@@ -43,3 +43,9 @@ impl Injector {
         bail!("이 OS 의 입력 주입은 아직 구현되지 않음")
     }
 }
+
+pub fn wake_display() {}
+
+pub fn prevent_sleep() -> Option<std::process::Child> {
+    None
+}
