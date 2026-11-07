@@ -23,9 +23,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use legato_core::clipboard::ClipboardSync;
 use legato_core::codec::I420Frame;
-use legato_core::framing::{read_msg, write_msg};
+use legato_core::framing::{read_msg, write_msg, write_tag};
 use legato_core::keymap::should_swap_cmd_ctrl;
-use legato_core::protocol::{ClientMsg, InputEvent, Os, Quality, ServerMsg};
+use legato_core::protocol::{ClientMsg, InputEvent, Os, Quality, ServerMsg, UNI_CLIPBOARD};
 use winit::event_loop::EventLoop;
 
 use crate::app::{App, AppConfig, UserEvent};
@@ -136,6 +136,8 @@ fn resolve(host: &str) -> Result<(SocketAddr, String)> {
 
 fn password() -> Result<String> {
     if let Ok(p) = std::env::var("LEGATO_PASSWORD") {
+        // 다른 곳(자식 프로세스 등)으로 새지 않게 바로 지운다. 아직 스레드가 하나뿐일 때 부른다.
+        unsafe { std::env::remove_var("LEGATO_PASSWORD") };
         return Ok(p);
     }
     rpassword::prompt_password("비밀번호 또는 접속 코드: ").context("비밀번호 입력 실패")
@@ -209,25 +211,49 @@ fn run(cli: Cli) -> Result<()> {
         }
     });
 
-    // 영상 수신 → 디스플레이별 디코딩 스레드.
-    let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
-    {
-        let _guard = rt.enter();
-        stream::spawn_video_reader(conn.clone(), routes.clone());
-    }
-
-    // 클립보드 공유: 뷰어에서 바뀌면 호스트로 보낸다.
+    // 클립보드 공유: 뷰어에서 바뀌면 호스트로 보낸다. 입력이 담긴 제어 스트림을 막지 않게 별도 스트림으로.
     let clipboard_on = Arc::new(AtomicBool::new(!cli.no_clipboard));
     let clipboard = if cli.headless {
         None
     } else {
-        let (tx, on) = (ctl_tx.clone(), clipboard_on.clone());
+        let (conn, on, handle) = (conn.clone(), clipboard_on.clone(), rt.handle().clone());
         ClipboardSync::start(move |text| {
-            if on.load(Ordering::SeqCst) {
-                let _ = tx.send(ClientMsg::Clipboard { text });
+            if !on.load(Ordering::SeqCst) {
+                return;
             }
+            let conn = conn.clone();
+            handle.spawn(async move {
+                let r: Result<()> = async {
+                    let mut uni = conn.open_uni().await?;
+                    let _ = uni.set_priority(-2);
+                    write_tag(&mut uni, UNI_CLIPBOARD).await?;
+                    write_msg(&mut uni, &ClientMsg::Clipboard { text }).await?;
+                    uni.finish()?;
+                    Ok(())
+                }
+                .await;
+                if let Err(e) = r {
+                    tracing::debug!("클립보드 보내기 실패: {e:#}");
+                }
+            });
         })
     };
+
+    // 영상·클립보드 수신 → 디스플레이별 디코딩 스레드 / 로컬 클립보드.
+    let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
+    {
+        let _guard = rt.enter();
+        let clip = clipboard.as_ref().map(|c| c.sender());
+        let on = clipboard_on.clone();
+        let on_clipboard: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |text| {
+            if on.load(Ordering::SeqCst)
+                && let Some(c) = &clip
+            {
+                c.set(text);
+            }
+        });
+        stream::spawn_video_reader(conn.clone(), routes.clone(), on_clipboard);
+    }
 
     if cli.headless {
         let display_id = open[0];
@@ -252,8 +278,6 @@ fn run(cli: Cli) -> Result<()> {
     {
         let proxy = proxy.clone();
         let conn = conn.clone();
-        let clip = clipboard.as_ref().map(|c| c.sender());
-        let on = clipboard_on.clone();
         rt.spawn(async move {
             let reason = loop {
                 tokio::select! {
@@ -263,11 +287,6 @@ fn run(cli: Cli) -> Result<()> {
                         }
                         Ok(Some(ServerMsg::QualityChanged { display_id, quality })) => {
                             let _ = proxy.send_event(UserEvent::QualityChanged(display_id, quality));
-                        }
-                        Ok(Some(ServerMsg::Clipboard { text })) => {
-                            if on.load(Ordering::SeqCst) && let Some(c) = &clip {
-                                c.set(text);
-                            }
                         }
                         Ok(Some(ServerMsg::Notice { message })) => {
                             eprintln!("알림: {message}");
@@ -300,6 +319,19 @@ fn run(cli: Cli) -> Result<()> {
         clipboard_on,
         caps_hangul: cli.caps_hangul.unwrap_or(cfg!(target_os = "macos")),
     };
+    // 1초마다 왕복 시간을 창에 알려 메뉴에 지연·fps 를 보여준다.
+    {
+        let (proxy, conn) = (proxy.clone(), conn.clone());
+        rt.spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tick.tick().await;
+                if proxy.send_event(UserEvent::Stats(conn.rtt().as_millis() as u32)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
     let mut app = App::new(cfg, ctl_tx, routes, proxy);
     event_loop.run_app(&mut app)?;
 
@@ -389,6 +421,7 @@ fn run_headless(
         "latency_ms_p50": pct(0.5),
         "latency_ms_p95": pct(0.95),
         "latency_ms_max": pct(1.0),
+        "rtt_ms": conn.rtt().as_secs_f64() * 1000.0,
     });
     println!("{stats}");
     if let Some(path) = dump {

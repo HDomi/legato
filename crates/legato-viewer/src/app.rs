@@ -28,6 +28,8 @@ pub enum UserEvent {
     Closed(String),
     Menu(String),
     QualityChanged(u32, Quality),
+    /// 1초마다: 왕복 시간 (ms).
+    Stats(u32),
 }
 
 /// 원격 디스플레이 하나를 보여주는 창.
@@ -66,6 +68,8 @@ pub struct App {
     started: bool,
     /// Caps Lock 마지막 이벤트 (눌림 여부, 시각). 한 번 누를 때 눌림·뗌이 연달아 오는지 가려낸다.
     last_caps: Option<(bool, std::time::Instant)>,
+    /// 자동 화질일 때 디스플레이별 현재 단계.
+    auto_level: HashMap<u32, Quality>,
     pub exit_message: Option<String>,
 }
 
@@ -85,6 +89,7 @@ impl App {
             wins: HashMap::new(),
             started: false,
             last_caps: None,
+            auto_level: HashMap::new(),
             exit_message: None,
         }
     }
@@ -291,6 +296,33 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::QualityChanged(d, q) => {
                 tracing::info!("디스플레이 {d} 자동 화질 → {}", q.label());
+                self.auto_level.insert(d, q);
+            }
+            UserEvent::Stats(rtt) => {
+                // 디스플레이별 지난 1초 fps 와 가장 오래 걸린 디코딩 시간.
+                let routes = self.routes.lock().expect("뮤텍스");
+                let mut parts = Vec::new();
+                for w in self.wins.values() {
+                    if let Some(input) = routes.get(&w.display_id) {
+                        let fps = input.stats.frames.swap(0, std::sync::atomic::Ordering::Relaxed);
+                        let dec = input.stats.max_decode_us.swap(0, std::sync::atomic::Ordering::Relaxed);
+                        parts.push((fps, dec / 1000));
+                    }
+                }
+                drop(routes);
+                let (fps, dec) = parts.iter().fold((0, 0), |(f, d), (pf, pd)| (f.max(*pf), d.max(*pd)));
+                let level = match self.cfg.quality {
+                    Quality::Auto => {
+                        let l = self.auto_level.values().next().copied().unwrap_or(Quality::Balanced);
+                        format!("{} ({})", Quality::Auto.label(), l.label())
+                    }
+                    q => q.label().to_string(),
+                };
+                let text = format!("핑 {rtt}ms · {fps}fps · 디코딩 {dec}ms · {level}");
+                tracing::debug!("{text}");
+                if let Some(m) = &self.menu {
+                    m.status.set_text(text);
+                }
             }
             UserEvent::Menu(id) => self.handle_menu(event_loop, &id),
             UserEvent::Closed(msg) => {

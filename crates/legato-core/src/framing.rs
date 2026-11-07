@@ -24,8 +24,30 @@ where
     Ok(())
 }
 
+/// 단방향 스트림 종류 표시 바이트를 쓴다.
+pub async fn write_tag<W: AsyncWrite + Unpin>(w: &mut W, tag: u8) -> Result<()> {
+    w.write_all(&[tag]).await.context("스트림 쓰기 실패")
+}
+
+/// 단방향 스트림 종류 표시 바이트를 읽는다.
+pub async fn read_tag<R: AsyncRead + Unpin>(r: &mut R) -> Result<u8> {
+    let mut b = [0u8; 1];
+    r.read_exact(&mut b).await.context("스트림 종류 읽기 실패")?;
+    Ok(b[0])
+}
+
 /// 메시지 하나를 읽는다. 스트림이 깔끔하게 끝났으면 `None`.
 pub async fn read_msg<R, T>(r: &mut R) -> Result<Option<T>>
+where
+    R: AsyncRead + Unpin,
+    T: DeserializeOwned,
+{
+    read_msg_limited(r, MAX_MESSAGE_LEN).await
+}
+
+/// 크기 상한을 정해 메시지 하나를 읽는다. 인증 전 메시지처럼 작아야 하는 곳에서 큰 길이로
+/// 메모리를 잡게 만드는 공격을 막는다.
+pub async fn read_msg_limited<R, T>(r: &mut R, max_len: usize) -> Result<Option<T>>
 where
     R: AsyncRead + Unpin,
     T: DeserializeOwned,
@@ -37,8 +59,8 @@ where
         Err(e) => return Err(e).context("스트림 읽기 실패"),
     }
     let len = u32::from_le_bytes(len) as usize;
-    if len > MAX_MESSAGE_LEN {
-        bail!("메시지 길이 비정상: {len} 바이트");
+    if len > max_len.min(MAX_MESSAGE_LEN) {
+        bail!("메시지 길이 비정상: {len} 바이트 (상한 {max_len})");
     }
     let mut body = vec![0u8; len];
     r.read_exact(&mut body).await.context("메시지 본문 읽기 실패")?;
@@ -63,5 +85,14 @@ mod tests {
         );
         let end: Option<ClientMsg> = read_msg(&mut b).await.unwrap();
         assert!(end.is_none());
+    }
+
+    #[tokio::test]
+    async fn 상한보다_큰_길이는_읽기_전에_거부() {
+        let (mut a, mut b) = tokio::io::duplex(64);
+        // 길이만 크게 적고 본문은 보내지 않는다 (메모리를 잡지 말아야 함).
+        tokio::io::AsyncWriteExt::write_all(&mut a, &(10_000_000u32).to_le_bytes()).await.unwrap();
+        let r: Result<Option<ClientMsg>> = read_msg_limited(&mut b, 4096).await;
+        assert!(r.is_err());
     }
 }

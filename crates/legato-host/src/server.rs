@@ -1,6 +1,6 @@
 //! 접속 수락, 인증, 영상 송출, 입력 처리.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
@@ -11,9 +11,10 @@ use anyhow::{Context, Result, bail};
 use legato_core::adaptive::{AdaptiveController, Sample};
 use legato_core::auth::{AuthLimiter, PasswordRecord, channel_binding, match_slot, new_nonce};
 use legato_core::clipboard::ClipboardSync;
-use legato_core::framing::{read_msg, write_msg};
+use legato_core::framing::{read_msg, read_msg_limited, read_tag, write_msg, write_tag};
 use legato_core::protocol::{
-    ClientMsg, EncodeParams, InputEvent, MAX_CLIPBOARD_BYTES, Os, PROTOCOL_VERSION, Quality, ServerMsg, VideoPacket,
+    ClientMsg, EncodeParams, InputEvent, MAX_CLIPBOARD_BYTES, Os, PROTOCOL_VERSION, Quality, ServerMsg, UNI_CLIPBOARD,
+    UNI_VIDEO, VideoPacket,
 };
 use tokio::sync::mpsc;
 
@@ -93,6 +94,14 @@ impl Drop for SessionGuard<'_> {
     }
 }
 
+/// 인증 전에 받는 메시지(Hello, 인증 응답) 크기 상한.
+const PRE_AUTH_MAX: usize = 4096;
+
+/// 접속한 쪽이 보낸 이름을 로그·화면에 써도 되게 줄인다 (제어 문자 제거, 64자).
+fn sanitize_name(name: &str) -> String {
+    name.chars().filter(|c| !c.is_control()).take(64).collect()
+}
+
 /// 기존 세션을 닫을 때 쓰는 QUIC 종료 코드와 이유. 뷰어가 이 값으로 안내 문구를 고른다.
 pub const CLOSE_REPLACED: u32 = 6;
 
@@ -106,7 +115,8 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
     if let Err(remaining) = locked {
         tracing::warn!("{peer} 잠김 상태에서 접속 시도 ({}초 남음)", remaining.as_secs());
         // 뷰어가 이유를 알 수 있게 메시지를 보내고 닫는다. 비밀번호 확인은 아예 하지 않는다.
-        let _ = tokio::time::timeout(Duration::from_secs(5), read_msg::<_, ClientMsg>(&mut recv)).await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), read_msg_limited::<_, ClientMsg>(&mut recv, PRE_AUTH_MAX))
+            .await;
         write_msg(
             &mut send,
             &ServerMsg::Error {
@@ -124,13 +134,14 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
     }
 
     // 1. Hello
-    let hello: ClientMsg = tokio::time::timeout(Duration::from_secs(10), read_msg(&mut recv))
+    let hello: ClientMsg = tokio::time::timeout(Duration::from_secs(10), read_msg_limited(&mut recv, PRE_AUTH_MAX))
         .await
         .context("Hello 대기 시간 초과")??
         .context("Hello 전에 스트림 종료")?;
     let ClientMsg::Hello { version, client_name, client_os } = hello else {
         bail!("첫 메시지가 Hello 가 아님")
     };
+    let client_name = sanitize_name(&client_name);
     if version != PROTOCOL_VERSION {
         write_msg(
             &mut send,
@@ -158,7 +169,7 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
     let binding = channel_binding(&conn)?;
     let slots = records.iter().map(|r| r.slot()).collect();
     write_msg(&mut send, &ServerMsg::Challenge { slots, nonce }).await?;
-    let resp: ClientMsg = tokio::time::timeout(Duration::from_secs(30), read_msg(&mut recv))
+    let resp: ClientMsg = tokio::time::timeout(Duration::from_secs(30), read_msg_limited(&mut recv, PRE_AUTH_MAX))
         .await
         .context("인증 응답 대기 시간 초과")??
         .context("인증 응답 전에 스트림 종료")?;
@@ -234,6 +245,7 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
     });
     // 읽기도 작업 하나로 빼서 select 에서 안전하게 기다린다 (read_msg 는 취소 안전하지 않음).
     let (in_tx, mut in_rx) = mpsc::unbounded_channel::<Result<ClientMsg>>();
+    let in_tx_uni = in_tx.clone();
     let reader = tokio::spawn(async move {
         loop {
             match read_msg::<_, ClientMsg>(&mut recv).await {
@@ -258,12 +270,36 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         });
     }
 
-    // 클립보드: 호스트에서 바뀌면 뷰어로 보낸다.
+    // 클립보드: 호스트에서 바뀌면 뷰어로 보낸다. 큰 텍스트가 제어 메시지를 막지 않게 별도 스트림으로.
     let clipboard = {
-        let out = out_tx.clone();
+        let (conn, rt) = (conn.clone(), tokio::runtime::Handle::current());
         ClipboardSync::start(move |text| {
             tracing::debug!("호스트 클립보드 보냄 ({} 바이트)", text.len());
-            let _ = out.send(ServerMsg::Clipboard { text });
+            let conn = conn.clone();
+            rt.spawn(async move {
+                if let Err(e) = send_uni(&conn, UNI_CLIPBOARD, -2, &ServerMsg::Clipboard { text }).await {
+                    tracing::debug!("클립보드 보내기 실패: {e:#}");
+                }
+            });
+        })
+    };
+    // 뷰어가 여는 단방향 스트림 (클립보드). 한 스트림에 메시지 하나.
+    let uni_reader = {
+        let (conn, in_tx) = (conn.clone(), in_tx_uni);
+        tokio::spawn(async move {
+            while let Ok(mut uni) = conn.accept_uni().await {
+                let in_tx = in_tx.clone();
+                tokio::spawn(async move {
+                    if read_tag(&mut uni).await.ok() != Some(UNI_CLIPBOARD) {
+                        return;
+                    }
+                    if let Ok(Some(m @ ClientMsg::Clipboard { .. })) =
+                        read_msg_limited::<_, ClientMsg>(&mut uni, MAX_CLIPBOARD_BYTES + 64).await
+                    {
+                        let _ = in_tx.send(Ok(m));
+                    }
+                });
+            }
         })
     };
 
@@ -320,10 +356,22 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
                                 c.set(text);
                             }
                         }
+                        ClientMsg::FrameAck { display_id, stream, seq } => {
+                            if let Some(p) = pipelines.get(&display_id)
+                                && p.stream == stream
+                            {
+                                p.latency.ack(seq);
+                            }
+                        }
                         ClientMsg::Hello { .. } | ClientMsg::AuthResponse { .. } => bail!("세션 중 잘못된 메시지"),
                     }
                 }
                 _ = ticker.tick() => {
+                    // 지연 예산 계산에 쓰는 왕복 시간을 갱신한다.
+                    let rtt = conn.rtt().as_millis().min(u32::MAX as u128) as u32;
+                    for p in pipelines.values() {
+                        p.latency.rtt_ms.store(rtt, Ordering::Relaxed);
+                    }
                     // 자동 화질: 디스플레이마다 1초 측정값으로 단계를 정한다.
                     let mut changes = Vec::new();
                     let mut failed = Vec::new();
@@ -379,6 +427,7 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
     drop(clipboard);
     drop(out_tx);
     reader.abort();
+    uni_reader.abort();
     let _ = tokio::time::timeout(Duration::from_secs(1), writer).await;
     tracing::info!("{peer} 세션 끝");
     emit("session_ended", serde_json::json!({ "peer": peer.to_string() }));
@@ -428,10 +477,64 @@ async fn start_pipeline(
     };
     let params = effective_params(level, state.limits);
     let c = conn.clone();
-    let mut p = blocking_with_timeout(move || Pipeline::start(&c, display_id, params)).await?;
+    let stream = NEXT_STREAM.fetch_add(1, Ordering::Relaxed);
+    let mut p = blocking_with_timeout(move || Pipeline::start(&c, display_id, params, stream)).await?;
     p.quality = quality;
     p.controller = controller;
     Ok(p)
+}
+
+/// 파이프라인 세대 번호 (프로세스 전체에서 증가).
+static NEXT_STREAM: AtomicU32 = AtomicU32::new(1);
+
+/// 보낸 뒤 아직 뷰어가 처리했다고 알려오지 않은 프레임들. 이걸로 화면에 쌓인 지연을 잰다.
+///
+/// 네트워크나 뷰어가 밀리면 확인 응답이 늦어지고, 이 목록의 가장 오래된 프레임 나이가 늘어난다.
+/// 나이가 "왕복 시간 + 여유" 를 넘으면 새 프레임을 인코딩하지 않고 버린다. 그러면 대기열에 낡은
+/// 프레임이 쌓이지 않아 화면 지연이 일정 한도를 넘지 않는다 (대신 순간 fps 가 내려간다).
+#[derive(Default)]
+pub struct Latency {
+    inflight: Mutex<VecDeque<(u64, Instant)>>,
+    pub rtt_ms: AtomicU32,
+}
+
+/// 왕복 시간 위에 허용하는 지연 여유.
+const LATENCY_SLACK: Duration = Duration::from_millis(100);
+/// 확인 응답 없이 보낼 수 있는 최대 프레임 수 (확인 응답이 아예 안 올 때의 안전장치).
+const MAX_INFLIGHT_FRAMES: usize = 90;
+
+impl Latency {
+    fn sent(&self, seq: u64) {
+        self.inflight.lock().expect("뮤텍스").push_back((seq, Instant::now()));
+    }
+
+    fn ack(&self, seq: u64) {
+        let mut q = self.inflight.lock().expect("뮤텍스");
+        while q.front().is_some_and(|(s, _)| *s <= seq) {
+            q.pop_front();
+        }
+    }
+
+    /// 지금 프레임을 더 보내면 지연이 한도를 넘는지.
+    fn congested(&self) -> bool {
+        // 진단용: 지연 제한을 끄고 비교할 때.
+        if std::env::var_os("LEGATO_DEBUG_NO_LATENCY_LIMIT").is_some() {
+            return false;
+        }
+        let q = self.inflight.lock().expect("뮤텍스");
+        let budget = Duration::from_millis(self.rtt_ms.load(Ordering::Relaxed) as u64) + LATENCY_SLACK;
+        q.len() >= MAX_INFLIGHT_FRAMES || q.front().is_some_and(|(_, t)| t.elapsed() > budget)
+    }
+}
+
+/// 단방향 스트림 하나에 종류 바이트와 메시지 하나를 보내고 닫는다.
+async fn send_uni<T: serde::Serialize>(conn: &quinn::Connection, tag: u8, priority: i32, msg: &T) -> Result<()> {
+    let mut uni = conn.open_uni().await?;
+    let _ = uni.set_priority(priority);
+    write_tag(&mut uni, tag).await?;
+    write_msg(&mut uni, msg).await?;
+    uni.finish()?;
+    Ok(())
 }
 
 /// 1초 측정값 묶음.
@@ -445,6 +548,9 @@ struct PipeStats {
 /// 캡처 → 인코딩 → 전송 파이프라인 (디스플레이 하나). drop 하면 모두 멈춘다.
 struct Pipeline {
     display_id: u32,
+    /// 파이프라인 세대 (뷰어 확인 응답과 맞춰 본다).
+    stream: u32,
+    latency: Arc<Latency>,
     quality: Quality,
     controller: Option<AdaptiveController>,
     _capture: platform::CaptureHandle,
@@ -489,7 +595,7 @@ impl Pipeline {
         self.controller.as_mut()?.push(sample)
     }
 
-    fn start(conn: &quinn::Connection, display_id: u32, params: EncodeParams) -> Result<Self> {
+    fn start(conn: &quinn::Connection, display_id: u32, params: EncodeParams, stream: u32) -> Result<Self> {
         let (raw_tx, raw_rx) = sync_channel(1);
         let sink = FrameSink::new(raw_tx);
         let dropped = sink.dropped.clone();
@@ -502,7 +608,10 @@ impl Pipeline {
         let keyframe = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(PipeStats::default());
         let failed = Arc::new(AtomicBool::new(false));
-        let (pkt_tx, mut pkt_rx) = mpsc::channel::<VideoPacket>(2);
+        let latency = Arc::new(Latency::default());
+        latency.rtt_ms.store(conn.rtt().as_millis().min(u32::MAX as u128) as u32, Ordering::Relaxed);
+        // 전송 대기열은 1개: 쌓인 지연은 확인 응답 기반 판단으로 막는다.
+        let (pkt_tx, mut pkt_rx) = mpsc::channel::<VideoPacket>(1);
 
         // 인코더 스레드: 블로킹 작업이라 tokio 밖에서 돈다.
         {
@@ -510,6 +619,8 @@ impl Pipeline {
             let keyframe = keyframe.clone();
             let stats = stats.clone();
             let failed = failed.clone();
+            let latency = latency.clone();
+            let dropped = dropped.clone();
             std::thread::Builder::new().name(format!("legato-encoder-{display_id}")).spawn(move || {
                 let mut seq = 0u64;
                 // 마지막 프레임. 화면이 멈춰 새 프레임이 안 와도 키프레임 요청에 답할 수 있게 들고 있는다.
@@ -528,6 +639,12 @@ impl Pipeline {
                         }
                         Err(RecvTimeoutError::Disconnected) => break,
                     };
+                    // 뷰어가 아직 처리 못 한 프레임이 지연 한도를 넘었으면 이번 프레임은 버린다 (낡은 화면이 쌓이지 않게).
+                    if latency.congested() {
+                        dropped.fetch_add(1, Ordering::Relaxed);
+                        last = Some(raw);
+                        continue;
+                    }
                     if keyframe.swap(false, Ordering::SeqCst) {
                         enc.request_keyframe();
                     }
@@ -535,6 +652,7 @@ impl Pipeline {
                         Ok(Some(e)) => {
                             let pkt = VideoPacket {
                                 display_id,
+                                stream,
                                 seq,
                                 capture_us: raw.capture_us,
                                 keyframe: e.keyframe,
@@ -568,6 +686,7 @@ impl Pipeline {
         {
             let conn = conn.clone();
             let stop = stop.clone();
+            let latency = latency.clone();
             let rt = tokio::runtime::Handle::current();
             rt.spawn(async move {
                 let mut uni = match conn.open_uni().await {
@@ -577,14 +696,21 @@ impl Pipeline {
                         return;
                     }
                 };
+                // 제어 메시지(우선순위 0)가 영상보다 먼저 나가게 한다.
+                let _ = uni.set_priority(-1);
+                if write_tag(&mut uni, UNI_VIDEO).await.is_err() {
+                    return;
+                }
                 while let Some(pkt) = pkt_rx.recv().await {
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
+                    let seq = pkt.seq;
                     if let Err(e) = write_msg(&mut uni, &pkt).await {
                         tracing::debug!("영상 전송 중단: {e:#}");
                         break;
                     }
+                    latency.sent(seq);
                 }
                 let _ = uni.finish();
             });
@@ -592,6 +718,8 @@ impl Pipeline {
 
         Ok(Self {
             display_id,
+            stream,
+            latency,
             quality: Quality::Balanced,
             controller: None,
             width: capture.width,

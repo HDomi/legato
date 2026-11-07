@@ -21,6 +21,8 @@ pub fn quality_id(q: Quality) -> String {
 
 pub struct ViewerMenu {
     pub menu: Menu,
+    /// 연결 상태 표시 (누를 수 없는 항목, 1초마다 갱신).
+    pub status: MenuItem,
     pub swap: CheckMenuItem,
     pub clipboard: CheckMenuItem,
     pub caps_hangul: CheckMenuItem,
@@ -68,10 +70,13 @@ impl ViewerMenu {
             display_items.push((d.id, item));
             let _ = i;
         }
+        let status = MenuItem::with_id("status", "연결 상태 확인 중…", false, None);
         let remote = Submenu::with_items(
             "원격",
             true,
             &[
+                &status,
+                &PredefinedMenuItem::separator(),
                 &MenuItem::with_id(ID_CAD, "Ctrl+Alt+Del 보내기", true, None),
                 &PredefinedMenuItem::separator(),
                 &quality_menu,
@@ -84,6 +89,7 @@ impl ViewerMenu {
         )?;
         menu.append_items(&[&app, &remote])?;
         Ok(Self {
+            status,
             menu,
             swap: swap_item,
             clipboard: clip_item,

@@ -6,7 +6,12 @@
 use serde::{Deserialize, Serialize};
 
 /// 프로토콜 버전. 호환이 깨지는 변경마다 올린다.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
+
+/// 단방향 스트림 첫 바이트: 어떤 스트림인지.
+pub const UNI_VIDEO: u8 = 0;
+/// 클립보드 한 건 (입력이 담긴 제어 스트림을 막지 않게 따로 보낸다).
+pub const UNI_CLIPBOARD: u8 = 1;
 
 /// 운영체제 종류. 키 매핑(Cmd↔Ctrl)과 안내 문구에 쓴다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,8 +53,11 @@ pub enum ClientMsg {
     Input { display_id: u32, event: InputEvent },
     /// 디코더가 망가졌을 때 키프레임 요청.
     RequestKeyframe { display_id: u32 },
-    /// 뷰어 쪽 클립보드 텍스트가 바뀜.
+    /// 뷰어 쪽 클립보드 텍스트가 바뀜 (`UNI_CLIPBOARD` 스트림으로 보낸다).
     Clipboard { text: String },
+    /// 이 디스플레이 영상의 `seq` 까지 처리했음 (누적). 호스트는 이걸로 쌓인 지연을 재고
+    /// 너무 쌓이면 새 프레임 인코딩을 건너뛰어 화면이 밀리지 않게 한다. `stream` 은 파이프라인 세대.
+    FrameAck { display_id: u32, stream: u32, seq: u64 },
 }
 
 /// 호스트 → 뷰어 메시지.
@@ -109,6 +117,8 @@ pub struct DisplayInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoPacket {
     pub display_id: u32,
+    /// 파이프라인 세대 (화질 변경 등으로 다시 시작할 때마다 바뀜). 이전 세대의 확인 응답을 가려낸다.
+    pub stream: u32,
     pub seq: u64,
     /// 호스트에서 캡처한 시각 (유닉스 마이크로초).
     pub capture_us: u64,

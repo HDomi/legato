@@ -20,15 +20,20 @@ fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-/// 영상 전송에 맞춘 QUIC 전송 설정.
+/// 실시간 화면 전송에 맞춘 QUIC 전송 설정.
+///
+/// - 혼잡 제어는 BBR: Cubic 은 회선 버퍼를 가득 채울 때까지 보내서 대기열 지연이 커진다.
+///   BBR 은 대역폭과 최소 왕복 시간을 재서 버퍼를 비워 두는 쪽으로 보낸다.
+/// - 송신 창은 작게: 큰 창은 느린 회선에서 오래된 프레임을 쌓아 둔다. 지연 제한은 프레임 확인 응답으로
+///   애플리케이션이 따로 하지만, 전송 계층에서도 쌓일 수 있는 양을 줄인다 (키프레임 몇 개 분량).
 fn transport_config() -> quinn::TransportConfig {
     let mut t = quinn::TransportConfig::default();
     t.keep_alive_interval(Some(Duration::from_secs(2)));
     t.max_idle_timeout(Some(Duration::from_secs(10).try_into().expect("고정값")));
-    // 키프레임 하나가 수 MB 까지 갈 수 있어 수신 창을 넉넉히 잡는다.
     t.stream_receive_window((16u32 * 1024 * 1024).into());
     t.receive_window((32u32 * 1024 * 1024).into());
-    t.send_window(32 * 1024 * 1024);
+    t.send_window(8 * 1024 * 1024);
+    t.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     t
 }
 
@@ -43,7 +48,11 @@ pub fn server_endpoint(identity: &HostIdentity, bind: SocketAddr) -> Result<quin
         .context("서버 인증서 설정 실패")?;
     tls.alpn_protocols = vec![crate::ALPN.to_vec()];
     let mut cfg = quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(tls)?));
-    cfg.transport_config(Arc::new(transport_config()));
+    let mut t = transport_config();
+    // 뷰어가 여는 스트림: 제어 1개, 단방향은 클립보드용으로 몇 개만 (스트림을 마구 열어 자원을 잡지 못하게).
+    t.max_concurrent_bidi_streams(1u32.into());
+    t.max_concurrent_uni_streams(4u32.into());
+    cfg.transport_config(Arc::new(t));
     // 인증 전 연결이 쌓이지 않게 동시 수락 수를 제한한다.
     cfg.max_incoming(32);
     quinn::Endpoint::server(cfg, bind).with_context(|| format!("UDP {bind} 열기 실패"))
