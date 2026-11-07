@@ -1,0 +1,9 @@
+/target/
+node_modules/
+/app/dist/
+/app/src-tauri/target/
+/app/src-tauri/binaries/
+*.p12
+*.cer
+.DS_Store
+/app/src-tauri/gen/

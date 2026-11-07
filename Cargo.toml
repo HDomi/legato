@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/legato-core", "crates/legato-host", "crates/legato-viewer", "app/src-tauri"]
+# Tauri 앱은 프론트 빌드(app/dist)가 있어야 컴파일된다. 기본 cargo 명령에서는 빼고 tauri CLI 로 빌드한다.
+default-members = ["crates/legato-core", "crates/legato-host", "crates/legato-viewer"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+authors = ["HDomi"]
+
+[workspace.dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.14"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+openh264 = "0.9"
+sha2 = "0.10"
+hmac = "0.12"
+pbkdf2 = "0.12"
+rand = "0.9"
+hex = "0.4"
+directories = "6"
+subtle = "2"

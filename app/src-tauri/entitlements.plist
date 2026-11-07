@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- 하드닝된 런타임에서도 WebView 의 JIT 가 동작하게 허용한다. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <!-- 자체 서명이라 Apple 서명 라이브러리만 로드하는 검사를 끈다 (Swift 런타임 등 시스템 라이브러리는 문제없음). -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

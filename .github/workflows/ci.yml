@@ -1,0 +1,50 @@
+# main 푸시·PR 마다 Mac·Windows 에서 Rust 테스트와 프론트 빌드를 돌린다.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # 기본 멤버(core, host, viewer)만. Tauri 앱은 아래 app 작업에서 빌드한다.
+      - name: Test
+        run: cargo test --locked
+      - name: Clippy
+        run: cargo clippy --locked -- -D warnings
+
+  app:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install
+        working-directory: app
+        run: npm ci --no-audit --no-fund
+      - name: Build app bundle
+        working-directory: app
+        run: npx tauri build --bundles app
