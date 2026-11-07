@@ -2451,7 +2451,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "legato-app"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "hex",
@@ -2468,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "legato-core"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2492,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "legato-host"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2519,7 +2519,7 @@ dependencies = [
 
 [[package]]
 name = "legato-viewer"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "clap",
