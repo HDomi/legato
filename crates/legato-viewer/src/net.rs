@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use legato_core::auth::{compute_mac, compute_server_mac, derive_key, mac_eq, channel_binding};
 use legato_core::framing::{read_msg, write_msg};
 use legato_core::known_hosts::KnownHosts;
-use legato_core::protocol::{ClientMsg, DisplayInfo, MAX_AUTH_SLOTS, PROTOCOL_VERSION, ServerMsg};
+use legato_core::protocol::{ClientMsg, DisplayInfo, MAX_AUTH_SLOTS, Os, PROTOCOL_VERSION, ServerMsg};
 
 /// 인증까지 끝난 세션.
 pub struct Session {
@@ -15,6 +15,7 @@ pub struct Session {
     pub send: quinn::SendStream,
     pub recv: quinn::RecvStream,
     pub host_name: String,
+    pub host_os: Os,
     pub displays: Vec<DisplayInfo>,
     /// 고정 접속 코드로 인증했는지.
     pub via_access_code: bool,
@@ -38,7 +39,7 @@ pub async fn connect(addr: SocketAddr, host_key: &str, password: &str, accept_ne
     let conn = c.connection;
     let (mut send, mut recv) = conn.open_bi().await.context("제어 스트림 열기 실패")?;
 
-    write_msg(&mut send, &ClientMsg::Hello { version: PROTOCOL_VERSION, client_name: client_name() }).await?;
+    write_msg(&mut send, &ClientMsg::Hello { version: PROTOCOL_VERSION, client_name: client_name(), client_os: Os::current() }).await?;
     let challenge: ServerMsg = read_msg(&mut recv).await?.context("호스트가 연결을 닫음")?;
     let (slots, nonce) = match challenge {
         ServerMsg::Challenge { slots, nonce } => (slots, nonce),
@@ -63,13 +64,13 @@ pub async fn connect(addr: SocketAddr, host_key: &str, password: &str, accept_ne
     write_msg(&mut send, &ClientMsg::AuthResponse { macs }).await?;
 
     let reply: ServerMsg = read_msg(&mut recv).await?.context("호스트가 인증 중 연결을 닫음")?;
-    let (host_name, displays, via_access_code) = match reply {
-        ServerMsg::AuthOk { slot, via_access_code, server_mac, host_name, displays } => {
+    let (host_name, host_os, displays, via_access_code) = match reply {
+        ServerMsg::AuthOk { slot, via_access_code, server_mac, host_name, host_os, displays } => {
             let key = keys.get(slot as usize).context("호스트가 없는 슬롯 번호를 보냄")?;
             if !mac_eq(&server_mac, &compute_server_mac(key, &nonce, &binding)) {
                 bail!("호스트가 비밀번호를 증명하지 못했어. 가짜 호스트일 수 있어서 연결을 끊었어");
             }
-            (host_name, displays, via_access_code)
+            (host_name, host_os, displays, via_access_code)
         }
         ServerMsg::AuthFailed { reason } => bail!("인증 실패: {reason}"),
         ServerMsg::Error { message } => bail!("{message}"),
@@ -78,7 +79,7 @@ pub async fn connect(addr: SocketAddr, host_key: &str, password: &str, accept_ne
     if expected.as_deref() != Some(c.fingerprint.as_str()) {
         known.set(host_key, &c.fingerprint)?;
     }
-    Ok(Session { endpoint: c.endpoint, conn, send, recv, host_name, displays, via_access_code })
+    Ok(Session { endpoint: c.endpoint, conn, send, recv, host_name, host_os, displays, via_access_code })
 }
 
 fn client_name() -> String {

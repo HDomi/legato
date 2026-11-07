@@ -2,45 +2,78 @@
 //!
 //! 사용 예:
 //!   LEGATO_PASSWORD=xxxx-xxxx-xxxx legato-viewer 192.168.0.10
-//!   legato-viewer 192.168.0.10:47820 --windowed
+//!   legato-viewer 192.168.0.10:47820 --windowed --display 2 --quality high
 //!   legato-viewer 127.0.0.1 --headless --frames 120 --dump frame.png   # 창 없이 수신 검증
 
 mod app;
 mod keys;
+mod menu;
 mod net;
 mod render;
 mod stream;
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use legato_core::clipboard::ClipboardSync;
 use legato_core::codec::I420Frame;
 use legato_core::framing::{read_msg, write_msg};
-use legato_core::protocol::{ClientMsg, ServerMsg};
+use legato_core::keymap::should_swap_cmd_ctrl;
+use legato_core::protocol::{ClientMsg, InputEvent, Os, Quality, ServerMsg};
 use winit::event_loop::EventLoop;
 
-use crate::app::{App, UserEvent};
+use crate::app::{App, AppConfig, UserEvent};
+use crate::stream::Routes;
+
+#[derive(Clone, Copy, ValueEnum)]
+enum QualityArg {
+    Auto,
+    High,
+    Balanced,
+    Low,
+}
+
+impl From<QualityArg> for Quality {
+    fn from(q: QualityArg) -> Self {
+        match q {
+            QualityArg::Auto => Quality::Auto,
+            QualityArg::High => Quality::High,
+            QualityArg::Balanced => Quality::Balanced,
+            QualityArg::Low => Quality::Low,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "legato-viewer", version, about = "Legato 뷰어: 원격 컴퓨터 화면을 열고 조작한다")]
 struct Cli {
     /// 호스트 주소 (IP 또는 IP:포트).
     host: String,
-    /// 볼 디스플레이 ID. 생략하면 주 디스플레이.
+    /// 볼 디스플레이 ID (여러 번 쓸 수 있음). 생략하면 원격 디스플레이 전부.
     #[arg(long)]
-    display: Option<u32>,
+    display: Vec<u32>,
+    /// 화질. auto 는 네트워크 상태를 보고 호스트가 조절한다.
+    #[arg(long, value_enum, default_value = "auto")]
+    quality: QualityArg,
     /// 전체화면 대신 일반 창으로 연다 (macOS 기본은 전체화면 Space).
     #[arg(long)]
     windowed: bool,
+    /// OS 가 달라도 Cmd↔Ctrl 을 바꾸지 않는다.
+    #[arg(long)]
+    no_swap_cmd_ctrl: bool,
+    /// 클립보드를 공유하지 않는다.
+    #[arg(long)]
+    no_clipboard: bool,
     /// 호스트 인증서 지문이 바뀌었어도 새 지문을 받아들인다.
     #[arg(long)]
     accept_new_fingerprint: bool,
-    /// 창 없이 영상만 받아 통계를 낸다 (검증용).
+    /// 창 없이 영상만 받아 통계를 낸다 (검증용, 첫 디스플레이 하나).
     #[arg(long)]
     headless: bool,
     /// headless 에서 받을 프레임 수.
@@ -78,7 +111,9 @@ fn describe_close(e: &quinn::ConnectionError) -> String {
 }
 
 fn resolve(host: &str) -> Result<(SocketAddr, String)> {
-    let with_port = if host.parse::<SocketAddr>().is_ok() || host.rsplit_once(':').is_some_and(|(h, p)| !h.contains(':') && p.parse::<u16>().is_ok()) {
+    let with_port = if host.parse::<SocketAddr>().is_ok()
+        || host.rsplit_once(':').is_some_and(|(h, p)| !h.contains(':') && p.parse::<u16>().is_ok())
+    {
         host.to_string()
     } else if host.contains(':') {
         format!("[{host}]:{}", legato_core::DEFAULT_PORT) // 포트 없는 IPv6
@@ -120,23 +155,39 @@ fn run(cli: Cli) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
     let session = rt.block_on(net::connect(addr, &host_key, &password, cli.accept_new_fingerprint))?;
-    let target = match cli.display {
-        Some(id) => session.displays.iter().find(|d| d.id == id).cloned().with_context(|| format!("디스플레이 {id} 없음"))?,
-        None => session
-            .displays
-            .iter()
-            .find(|d| d.primary)
-            .or(session.displays.first())
-            .cloned()
-            .context("호스트에 디스플레이가 없음")?,
+    let mut open: Vec<u32> = if cli.display.is_empty() {
+        // 주 디스플레이를 맨 앞에 (첫 로컬 모니터에 오게).
+        let mut v: Vec<_> = session.displays.iter().map(|d| (!d.primary, d.id)).collect();
+        v.sort();
+        v.into_iter().map(|(_, id)| id).collect()
+    } else {
+        cli.display.clone()
     };
-    tracing::info!("{} 에 접속. 디스플레이 {} ({}x{})", session.host_name, target.id, target.width, target.height);
+    for id in &open {
+        if !session.displays.iter().any(|d| d.id == *id) {
+            bail!("디스플레이 {id} 없음 (호스트 디스플레이: {:?})", session.displays.iter().map(|d| d.id).collect::<Vec<_>>());
+        }
+    }
+    if open.is_empty() {
+        bail!("호스트에 디스플레이가 없음");
+    }
+    if cli.headless {
+        open.truncate(1);
+    }
+    let swap = !cli.no_swap_cmd_ctrl && should_swap_cmd_ctrl(Os::current(), session.host_os);
+    tracing::info!(
+        "{} ({:?}) 에 접속. 디스플레이 {:?}, Cmd↔Ctrl 교환 {}",
+        session.host_name,
+        session.host_os,
+        open,
+        if swap { "켬" } else { "끔" }
+    );
     emit(
         "connected",
         serde_json::json!({ "host": session.host_name, "displays": session.displays, "via_access_code": session.via_access_code }),
     );
 
-    let net::Session { endpoint, conn, mut send, mut recv, host_name, .. } = session;
+    let net::Session { endpoint, conn, mut send, mut recv, host_name, displays, .. } = session;
 
     // 제어 메시지 송신 작업.
     let (ctl_tx, mut ctl_rx) = tokio::sync::mpsc::unbounded_channel::<ClientMsg>();
@@ -147,22 +198,33 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
     });
-    ctl_tx.send(ClientMsg::StartStream { display_id: target.id }).ok();
 
-    // 영상 수신 → 디코딩 스레드.
-    let backlog = Arc::new(AtomicUsize::new(0));
-    let (pkt_tx, pkt_rx) = std::sync::mpsc::channel();
+    // 영상 수신 → 디스플레이별 디코딩 스레드.
+    let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
     {
         let _guard = rt.enter();
-        stream::spawn_video_reader(conn.clone(), pkt_tx, backlog.clone());
+        stream::spawn_video_reader(conn.clone(), routes.clone());
     }
 
-    if let Some((x, y)) = cli.probe_mouse {
-        ctl_tx.send(ClientMsg::Input(legato_core::protocol::InputEvent::MouseMove { x, y })).ok();
-    }
+    // 클립보드 공유: 뷰어에서 바뀌면 호스트로 보낸다.
+    let clipboard_on = Arc::new(AtomicBool::new(!cli.no_clipboard));
+    let clipboard = if cli.headless {
+        None
+    } else {
+        let (tx, on) = (ctl_tx.clone(), clipboard_on.clone());
+        ClipboardSync::start(move |text| {
+            if on.load(Ordering::SeqCst) {
+                let _ = tx.send(ClientMsg::Clipboard { text });
+            }
+        })
+    };
 
     if cli.headless {
-        let r = run_headless(&rt, conn, recv, pkt_rx, backlog, ctl_tx, cli.frames, cli.dump);
+        let display_id = open[0];
+        if let Some((x, y)) = cli.probe_mouse {
+            ctl_tx.send(ClientMsg::Input { display_id, event: InputEvent::MouseMove { x, y } }).ok();
+        }
+        let r = run_headless(&rt, conn, recv, routes, ctl_tx, display_id, cli.quality.into(), cli.frames, cli.dump);
         // 종료 신호가 호스트에 전달될 때까지 잠깐 기다린다 (안 그러면 호스트가 시간 초과까지 세션을 붙잡음).
         rt.block_on(async { tokio::time::timeout(Duration::from_secs(1), endpoint.wait_idle()).await.ok() });
         return r;
@@ -175,12 +237,22 @@ fn run(cli: Cli) -> Result<()> {
     {
         let proxy = proxy.clone();
         let conn = conn.clone();
+        let clip = clipboard.as_ref().map(|c| c.sender());
+        let on = clipboard_on.clone();
         rt.spawn(async move {
             let reason = loop {
                 tokio::select! {
                     msg = read_msg::<_, ServerMsg>(&mut recv) => match msg {
-                        Ok(Some(ServerMsg::StreamStarted { width, height, .. })) => {
-                            tracing::info!("영상 시작 {width}x{height}");
+                        Ok(Some(ServerMsg::StreamStarted { display_id, width, height, encoder })) => {
+                            tracing::info!("디스플레이 {display_id} 영상 시작 {width}x{height} ({encoder})");
+                        }
+                        Ok(Some(ServerMsg::QualityChanged { display_id, quality })) => {
+                            let _ = proxy.send_event(UserEvent::QualityChanged(display_id, quality));
+                        }
+                        Ok(Some(ServerMsg::Clipboard { text })) => {
+                            if on.load(Ordering::SeqCst) && let Some(c) = &clip {
+                                c.set(text);
+                            }
                         }
                         Ok(Some(ServerMsg::Notice { message })) => {
                             eprintln!("알림: {message}");
@@ -202,20 +274,20 @@ fn run(cli: Cli) -> Result<()> {
         });
     }
 
-    let latest: Arc<Mutex<Option<I420Frame>>> = Arc::new(Mutex::new(None));
-    {
-        let latest = latest.clone();
-        let proxy = proxy.clone();
-        stream::spawn_decoder(pkt_rx, backlog, ctl_tx.clone(), move |frame, _capture_us| {
-            *latest.lock().expect("뮤텍스") = Some(frame);
-            let _ = proxy.send_event(UserEvent::NewFrame);
-        });
-    }
-
     let fullscreen = cfg!(target_os = "macos") && !cli.windowed;
-    let mut app = App::new(format!("Legato — {host_name}"), fullscreen, (target.width, target.height), latest, ctl_tx);
+    let cfg = AppConfig {
+        host_name: host_name.clone(),
+        fullscreen,
+        displays,
+        open,
+        quality: cli.quality.into(),
+        swap,
+        clipboard_on,
+    };
+    let mut app = App::new(cfg, ctl_tx, routes, proxy);
     event_loop.run_app(&mut app)?;
 
+    drop(clipboard);
     conn.close(0u32.into(), b"bye");
     rt.block_on(async { tokio::time::timeout(Duration::from_secs(1), endpoint.wait_idle()).await.ok() });
     match app.exit_message.take() {
@@ -236,16 +308,19 @@ fn run_headless(
     rt: &tokio::runtime::Runtime,
     conn: quinn::Connection,
     mut recv: quinn::RecvStream,
-    pkt_rx: std::sync::mpsc::Receiver<legato_core::protocol::VideoPacket>,
-    backlog: Arc<AtomicUsize>,
+    routes: Routes,
     ctl_tx: tokio::sync::mpsc::UnboundedSender<ClientMsg>,
+    display_id: u32,
+    quality: Quality,
     frames: u32,
     dump: Option<std::path::PathBuf>,
 ) -> Result<()> {
     rt.spawn(async move {
         while let Ok(Some(msg)) = read_msg::<_, ServerMsg>(&mut recv).await {
             match msg {
-                ServerMsg::StreamStarted { width, height, .. } => tracing::info!("영상 시작 {width}x{height}"),
+                ServerMsg::StreamStarted { width, height, encoder, .. } => {
+                    tracing::info!("영상 시작 {width}x{height} ({encoder})")
+                }
                 ServerMsg::Notice { message } => eprintln!("알림: {message}"),
                 ServerMsg::Error { message } => {
                     eprintln!("오류: {message}");
@@ -256,9 +331,11 @@ fn run_headless(
         }
     });
     let (done_tx, done_rx) = std::sync::mpsc::channel::<(I420Frame, u64, u64)>();
-    stream::spawn_decoder(pkt_rx, backlog, ctl_tx, move |frame, capture_us| {
+    let input = stream::spawn_decoder(display_id, ctl_tx.clone(), move |frame, capture_us| {
         let _ = done_tx.send((frame, capture_us, legato_core::now_micros()));
     });
+    routes.lock().expect("뮤텍스").insert(display_id, input);
+    ctl_tx.send(ClientMsg::StartStream { display_id, quality }).ok();
 
     let start = Instant::now();
     let mut lat: Vec<f64> = Vec::new();

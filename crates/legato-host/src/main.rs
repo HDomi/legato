@@ -39,14 +39,14 @@ enum Cmd {
         /// 수신 주소.
         #[arg(long, default_value = "0.0.0.0")]
         bind: String,
-        /// 인코딩 최대 폭 (픽셀).
-        #[arg(long, default_value_t = 1920)]
+        /// 인코딩 최대 폭 상한 (픽셀). 뷰어가 고른 화질도 이 값을 넘지 않는다.
+        #[arg(long, default_value_t = 3840)]
         max_width: u32,
-        /// 최대 초당 프레임.
-        #[arg(long, default_value_t = 30)]
+        /// 초당 프레임 상한.
+        #[arg(long, default_value_t = 60)]
         fps: u32,
-        /// 목표 비트레이트 (bps).
-        #[arg(long, default_value_t = 8_000_000)]
+        /// 비트레이트 상한 (bps).
+        #[arg(long, default_value_t = 20_000_000)]
         bitrate: u32,
         /// 호스팅 중에도 시스템 잠자기를 허용한다 (기본은 막음).
         #[arg(long)]
@@ -242,7 +242,8 @@ fn serve(port: Option<u16>, bind: &str, max_width: u32, fps: u32, bitrate: u32, 
             "listening",
             serde_json::json!({ "port": port, "fingerprint": fp, "addresses": local_addresses() }),
         );
-        let state = Arc::new(server::ServerState::new(display, cfg.access_code.clone(), max_width, fps, bitrate));
+        let limits = legato_core::protocol::EncodeParams { max_width, fps, bitrate };
+        let state = Arc::new(server::ServerState::new(display, cfg.access_code.clone(), limits));
         tokio::select! {
             r = server::run(endpoint.clone(), state) => r,
             _ = tokio::signal::ctrl_c() => {

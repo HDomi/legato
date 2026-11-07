@@ -3,9 +3,41 @@
 mod capture;
 mod input;
 mod keymap;
+mod vt;
 
-pub use capture::{CaptureHandle, list_displays, request_screen_capture, screen_capture_allowed, start_capture};
+use anyhow::{Result, bail};
+use legato_core::codec::EncodedFrame;
+
+pub use capture::{CaptureHandle, list_displays, pixel_buffer_to_i420, request_screen_capture, screen_capture_allowed, start_capture};
 pub use input::{Injector, accessibility_trusted, request_accessibility};
+
+use super::{RawFrame, RawImage, VideoEncoder};
+
+/// VideoToolbox 하드웨어 인코더.
+pub struct HardwareEncoder(vt::VtEncoder);
+
+impl HardwareEncoder {
+    pub fn new(width: usize, height: usize, bitrate: u32, fps: u32) -> Result<Self> {
+        Ok(Self(vt::VtEncoder::new(width, height, bitrate, fps)?))
+    }
+}
+
+impl VideoEncoder for HardwareEncoder {
+    fn encode(&mut self, frame: &RawFrame) -> Result<Option<EncodedFrame>> {
+        match &frame.image {
+            RawImage::PixelBuffer(pb) => self.0.encode_pixel_buffer(pb.as_ptr(), frame.width, frame.height),
+            RawImage::I420(_) => bail!("하드웨어 인코더는 픽셀 버퍼만 받음"),
+        }
+    }
+
+    fn request_keyframe(&mut self) {
+        self.0.request_keyframe();
+    }
+
+    fn name(&self) -> &'static str {
+        "VideoToolbox (하드웨어)"
+    }
+}
 
 /// 사용자 활동을 알려 잠든 디스플레이를 깨운다 (원격 접속 직후).
 pub fn wake_display() {

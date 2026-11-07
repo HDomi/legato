@@ -38,7 +38,8 @@ pub fn accessibility_trusted() -> bool {
 }
 
 impl Injector {
-    pub fn new(display_id: u32) -> Self {
+    pub fn new() -> Self {
+        let display_id = CGDisplay::main().id;
         let b = CGDisplay::new(display_id).bounds();
         Self {
             display_id,
@@ -59,13 +60,19 @@ impl Injector {
         ev.post(CGEventTapLocation::HID);
     }
 
-    pub fn handle(&mut self, ev: &InputEvent) -> Result<()> {
+    /// 입력 하나를 주입한다. 마우스 좌표는 `display_id` 화면 기준 0~1 값.
+    pub fn handle(&mut self, display_id: u32, ev: &InputEvent) -> Result<()> {
+        if display_id != 0 {
+            self.display_id = display_id;
+        }
         match ev {
             InputEvent::MouseMove { x, y } => self.mouse_move(*x, *y),
             InputEvent::MouseButton { button, down } => self.mouse_button(*button, *down),
             InputEvent::Scroll { dx, dy, pixels } => self.scroll(*dx, *dy, *pixels),
             InputEvent::Key { code, down } => self.key(code, *down),
             InputEvent::ReleaseAll => self.release_all(),
+            // Ctrl+Alt+Del 은 Windows 전용. macOS 에서는 할 일이 없다.
+            InputEvent::SecureAttention => Ok(()),
         }
     }
 

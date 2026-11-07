@@ -1,20 +1,24 @@
 //! 접속 수락, 인증, 영상 송출, 입력 처리.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use legato_core::adaptive::{AdaptiveController, Sample};
 use legato_core::auth::{AuthLimiter, PasswordRecord, channel_binding, match_slot, new_nonce};
-use legato_core::codec::H264Encoder;
+use legato_core::clipboard::ClipboardSync;
 use legato_core::framing::{read_msg, write_msg};
-use legato_core::protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg, VideoPacket};
+use legato_core::protocol::{
+    ClientMsg, EncodeParams, InputEvent, MAX_CLIPBOARD_BYTES, Os, PROTOCOL_VERSION, Quality, ServerMsg, VideoPacket,
+};
 use tokio::sync::mpsc;
 
 use crate::events::emit;
-use crate::platform::{self, CaptureOptions};
+use crate::platform::{self, CaptureOptions, FrameSink};
 
 /// 서버 전체가 공유하는 상태.
 pub struct ServerState {
@@ -22,9 +26,8 @@ pub struct ServerState {
     pub display: Option<PasswordRecord>,
     /// 고정 접속 코드 (설정된 경우만).
     pub access_code: Option<PasswordRecord>,
-    pub max_width: u32,
-    pub fps: u32,
-    pub bitrate: u32,
+    /// 화질 상한 (명령줄 옵션). 뷰어가 고른 단계도 이 값을 넘지 않는다.
+    pub limits: EncodeParams,
     pub host_name: String,
     limiter: Mutex<AuthLimiter>,
     /// 지금 화면을 보고 있는 세션 (번호, 연결). 한 번에 하나만.
@@ -33,13 +36,11 @@ pub struct ServerState {
 }
 
 impl ServerState {
-    pub fn new(display: Option<PasswordRecord>, access_code: Option<PasswordRecord>, max_width: u32, fps: u32, bitrate: u32) -> Self {
+    pub fn new(display: Option<PasswordRecord>, access_code: Option<PasswordRecord>, limits: EncodeParams) -> Self {
         Self {
             display,
             access_code,
-            max_width,
-            fps,
-            bitrate,
+            limits,
             host_name: host_name(),
             limiter: Mutex::new(AuthLimiter::default()),
             current: Mutex::new(None),
@@ -121,7 +122,7 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         .await
         .context("Hello 대기 시간 초과")??
         .context("Hello 전에 스트림 종료")?;
-    let ClientMsg::Hello { version, client_name } = hello else { bail!("첫 메시지가 Hello 가 아님") };
+    let ClientMsg::Hello { version, client_name, client_os } = hello else { bail!("첫 메시지가 Hello 가 아님") };
     if version != PROTOCOL_VERSION {
         write_msg(&mut send, &ServerMsg::Error { message: format!("프로토콜 버전 불일치 (호스트 {PROTOCOL_VERSION}, 뷰어 {version})") }).await?;
         send.finish().ok();
@@ -191,71 +192,176 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         via_access_code,
         server_mac: records[slot].server_proof(&nonce, &binding),
         host_name: state.host_name.clone(),
+        host_os: Os::current(),
         displays: displays.clone(),
-    }).await?;
+    })
+    .await?;
     let how = if via_access_code { "고정 접속 코드" } else { "표시 비밀번호" };
-    tracing::info!("{peer} ({client_name}) 인증 성공 ({how})");
-    emit("session_started", serde_json::json!({ "peer": peer.to_string(), "client": client_name, "via_access_code": via_access_code }));
+    tracing::info!("{peer} ({client_name}, {client_os:?}) 인증 성공 ({how})");
+    emit(
+        "session_started",
+        serde_json::json!({ "peer": peer.to_string(), "client": client_name, "via_access_code": via_access_code }),
+    );
     // 잠든 디스플레이를 깨운다 (사용자 활동으로 알림).
     platform::wake_display();
 
+    // 제어 스트림 쓰기는 작업 하나가 맡는다 (클립보드 스레드·화질 조절 등 여러 곳에서 보낸다).
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ServerMsg>();
+    let writer = tokio::spawn(async move {
+        while let Some(m) = out_rx.recv().await {
+            if write_msg(&mut send, &m).await.is_err() {
+                break;
+            }
+        }
+        let _ = send.finish();
+    });
+    // 읽기도 작업 하나로 빼서 select 에서 안전하게 기다린다 (read_msg 는 취소 안전하지 않음).
+    let (in_tx, mut in_rx) = mpsc::unbounded_channel::<Result<ClientMsg>>();
+    let reader = tokio::spawn(async move {
+        loop {
+            match read_msg::<_, ClientMsg>(&mut recv).await {
+                Ok(Some(m)) => {
+                    if in_tx.send(Ok(m)).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = in_tx.send(Err(e));
+                    break;
+                }
+            }
+        }
+    });
+
     if !platform::accessibility_trusted() {
-        write_msg(&mut send, &ServerMsg::Notice {
-            message: "호스트에 손쉬운 사용 권한이 없어서 마우스·키보드 조작이 안 돼. 호스트 Mac 에서 권한을 허용해줘".into(),
-        })
-        .await?;
+        let _ = out_tx.send(ServerMsg::Notice {
+            message: "호스트에 입력 권한(손쉬운 사용)이 없어서 마우스·키보드 조작이 안 돼. 호스트에서 권한을 허용해줘".into(),
+        });
     }
 
+    // 클립보드: 호스트에서 바뀌면 뷰어로 보낸다.
+    let clipboard = {
+        let out = out_tx.clone();
+        ClipboardSync::start(move |text| {
+            tracing::debug!("호스트 클립보드 보냄 ({} 바이트)", text.len());
+            let _ = out.send(ServerMsg::Clipboard { text });
+        })
+    };
+
     // 3. 세션 루프
-    let mut pipeline: Option<Pipeline> = None;
-    let mut injector: Option<platform::Injector> = None;
+    let mut pipelines: HashMap<u32, Pipeline> = HashMap::new();
+    let mut injector = platform::Injector::new();
     let mut warned_input = false;
+    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    let mut old_restarts = 0u32;
     let result: Result<()> = async {
         loop {
-            let Some(msg) = read_msg::<_, ClientMsg>(&mut recv).await? else { break };
-            match msg {
-                ClientMsg::StartStream { display_id } => {
-                    pipeline = None; // 이전 캡처를 먼저 멈춘다.
-                    let opts = CaptureOptions { display_id, max_width: state.max_width, fps: state.fps };
-                    let (c, b) = (conn.clone(), state.bitrate);
-                    let p = match blocking_with_timeout(move || Pipeline::start(&c, opts, b)).await {
-                        Ok(p) => p,
-                        Err(e) => {
-                            let message = format!("화면 캡처를 시작할 수 없어: {e:#}");
-                            write_msg(&mut send, &ServerMsg::Error { message: message.clone() }).await?;
-                            send.finish().ok();
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                            bail!(message);
+            tokio::select! {
+                msg = in_rx.recv() => {
+                    let Some(msg) = msg else { break };
+                    match msg? {
+                        ClientMsg::StartStream { display_id, quality } => {
+                            pipelines.remove(&display_id); // 같은 화면의 이전 캡처를 먼저 멈춘다.
+                            let p = start_pipeline(&conn, &state, display_id, quality, None).await;
+                            match p {
+                                Ok(p) => {
+                                    let _ = out_tx.send(p.started_msg());
+                                    pipelines.insert(display_id, p);
+                                }
+                                Err(e) => {
+                                    let message = format!("화면 캡처를 시작할 수 없어: {e:#}");
+                                    let _ = out_tx.send(ServerMsg::Error { message: message.clone() });
+                                    tokio::time::sleep(Duration::from_millis(200)).await;
+                                    bail!(message);
+                                }
+                            }
                         }
-                    };
-                    write_msg(&mut send, &ServerMsg::StreamStarted { display_id, width: p.width, height: p.height }).await?;
-                    injector = Some(platform::Injector::new(display_id));
-                    pipeline = Some(p);
-                }
-                ClientMsg::Input(ev) => {
-                    if let Some(inj) = injector.as_mut()
-                        && let Err(e) = inj.handle(&ev)
-                        && !warned_input
-                    {
-                        tracing::warn!("입력 주입 실패: {e:#}");
-                        warned_input = true;
+                        ClientMsg::StopStream { display_id } => {
+                            pipelines.remove(&display_id);
+                        }
+                        ClientMsg::Input { display_id, event } => {
+                            if let Err(e) = injector.handle(display_id, &event)
+                                && !warned_input
+                            {
+                                tracing::warn!("입력 주입 실패: {e:#}");
+                                warned_input = true;
+                            }
+                        }
+                        ClientMsg::RequestKeyframe { display_id } => {
+                            if let Some(p) = pipelines.get(&display_id) {
+                                p.keyframe.store(true, Ordering::SeqCst);
+                                p.stats.keyframe_requests.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        ClientMsg::Clipboard { text } => {
+                            tracing::debug!("뷰어 클립보드 받음 ({} 바이트)", text.len());
+                            if text.len() <= MAX_CLIPBOARD_BYTES
+                                && let Some(c) = &clipboard
+                            {
+                                c.set(text);
+                            }
+                        }
+                        ClientMsg::Hello { .. } | ClientMsg::AuthResponse { .. } => bail!("세션 중 잘못된 메시지"),
                     }
                 }
-                ClientMsg::RequestKeyframe => {
-                    if let Some(p) = &pipeline {
-                        p.keyframe.store(true, Ordering::SeqCst);
+                _ = ticker.tick() => {
+                    // 자동 화질: 디스플레이마다 1초 측정값으로 단계를 정한다.
+                    let mut changes = Vec::new();
+                    let mut failed = Vec::new();
+                    for (id, p) in pipelines.iter_mut() {
+                        if p.failed.load(Ordering::SeqCst) {
+                            failed.push(*id);
+                        } else if let Some(level) = p.adapt() {
+                            changes.push((*id, level));
+                        }
+                    }
+                    // 인코더가 죽은 파이프라인은 같은 설정으로 다시 시작한다 (화면이 굳지 않게).
+                    for display_id in failed {
+                        let mut old = pipelines.remove(&display_id).expect("위에서 찾음");
+                        let (quality, controller) = (old.quality, old.controller.take());
+                        let level = controller.as_ref().map(|c| c.level()).unwrap_or(quality);
+                        drop(old);
+                        old_restarts += 1;
+                        if old_restarts > 5 {
+                            bail!("화면 인코딩이 계속 실패해서 연결을 끊었어");
+                        }
+                        let _ = out_tx.send(ServerMsg::Notice { message: "화면 인코딩 오류로 영상을 다시 시작했어".into() });
+                        let auto = (quality == Quality::Auto).then_some((controller, level));
+                        match start_pipeline(&conn, &state, display_id, quality, auto).await {
+                            Ok(p) => {
+                                let _ = out_tx.send(p.started_msg());
+                                pipelines.insert(display_id, p);
+                            }
+                            Err(e) => tracing::warn!("인코딩 오류 뒤 캡처 재시작 실패: {e:#}"),
+                        }
+                    }
+                    for (display_id, level) in changes {
+                        let mut old = pipelines.remove(&display_id).expect("위에서 찾음");
+                        tracing::info!("디스플레이 {display_id} 자동 화질: {}", level.label());
+                        let controller = old.controller.take();
+                        drop(old); // 이전 캡처를 먼저 멈춘다.
+                        match start_pipeline(&conn, &state, display_id, Quality::Auto, Some((controller, level))).await {
+                            Ok(p) => {
+                                let _ = out_tx.send(p.started_msg());
+                                let _ = out_tx.send(ServerMsg::QualityChanged { display_id, quality: level });
+                                pipelines.insert(display_id, p);
+                            }
+                            Err(e) => tracing::warn!("화질 변경 후 캡처 재시작 실패: {e:#}"),
+                        }
                     }
                 }
-                ClientMsg::Hello { .. } | ClientMsg::AuthResponse { .. } => bail!("세션 중 잘못된 메시지"),
             }
         }
         Ok(())
     }
     .await;
-    if let Some(inj) = injector.as_mut() {
-        let _ = inj.handle(&legato_core::protocol::InputEvent::ReleaseAll);
-    }
-    drop(pipeline);
+    let _ = injector.handle(0, &InputEvent::ReleaseAll);
+    drop(pipelines);
+    drop(clipboard);
+    drop(out_tx);
+    reader.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(1), writer).await;
     tracing::info!("{peer} 세션 끝");
     emit("session_ended", serde_json::json!({ "peer": peer.to_string() }));
     // 뷰어가 정상 종료(코드 0)로 닫은 경우는 오류가 아니다.
@@ -271,17 +377,68 @@ async fn blocking_with_timeout<T: Send + 'static>(f: impl FnOnce() -> Result<T> 
     match tokio::time::timeout(Duration::from_secs(15), tokio::task::spawn_blocking(f)).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => bail!("작업 스레드 실패: {e}"),
-        Err(_) => bail!("응답 없음. 호스트 Mac 에 화면 기록 권한 확인 창이 떠 있는지 봐줘"),
+        Err(_) => bail!("응답 없음. 호스트에 화면 기록 권한 확인 창이 떠 있는지 봐줘"),
     }
 }
 
-/// 캡처 → 인코딩 → 전송 파이프라인. drop 하면 모두 멈춘다.
+/// 화질 단계와 상한을 합친 실제 인코딩 매개변수.
+fn effective_params(level: Quality, limits: EncodeParams) -> EncodeParams {
+    let p = level.params();
+    EncodeParams {
+        max_width: p.max_width.min(limits.max_width),
+        fps: p.fps.min(limits.fps),
+        bitrate: p.bitrate.min(limits.bitrate),
+    }
+}
+
+/// 파이프라인을 시작한다. `auto` 가 있으면 자동 조절 중인 조절기와 단계를 이어받는다.
+async fn start_pipeline(
+    conn: &quinn::Connection,
+    state: &ServerState,
+    display_id: u32,
+    quality: Quality,
+    auto: Option<(Option<AdaptiveController>, Quality)>,
+) -> Result<Pipeline> {
+    let (controller, level) = match (quality, auto) {
+        (Quality::Auto, Some((c, level))) => (Some(c.unwrap_or_default()), level),
+        (Quality::Auto, None) => {
+            let c = AdaptiveController::default();
+            let level = c.level();
+            (Some(c), level)
+        }
+        (fixed, _) => (None, fixed),
+    };
+    let params = effective_params(level, state.limits);
+    let c = conn.clone();
+    let mut p = blocking_with_timeout(move || Pipeline::start(&c, display_id, params)).await?;
+    p.quality = quality;
+    p.controller = controller;
+    Ok(p)
+}
+
+/// 1초 측정값 묶음.
+#[derive(Default)]
+struct PipeStats {
+    sent: AtomicU32,
+    max_wait_ms: AtomicU32,
+    keyframe_requests: AtomicU32,
+}
+
+/// 캡처 → 인코딩 → 전송 파이프라인 (디스플레이 하나). drop 하면 모두 멈춘다.
 struct Pipeline {
+    display_id: u32,
+    quality: Quality,
+    controller: Option<AdaptiveController>,
     _capture: platform::CaptureHandle,
     stop: Arc<AtomicBool>,
     keyframe: Arc<AtomicBool>,
+    /// 인코더 스레드가 오류로 끝났는지.
+    failed: Arc<AtomicBool>,
+    stats: Arc<PipeStats>,
+    dropped: Arc<AtomicU32>,
     width: u32,
     height: u32,
+    encoder: &'static str,
 }
 
 impl Drop for Pipeline {
@@ -291,26 +448,50 @@ impl Drop for Pipeline {
 }
 
 impl Pipeline {
-    fn start(conn: &quinn::Connection, opts: CaptureOptions, bitrate: u32) -> Result<Self> {
+    fn started_msg(&self) -> ServerMsg {
+        ServerMsg::StreamStarted {
+            display_id: self.display_id,
+            width: self.width,
+            height: self.height,
+            encoder: self.encoder.to_string(),
+        }
+    }
+
+    /// 자동 화질이면 지난 1초 측정값을 조절기에 넣고, 단계가 바뀌면 새 단계를 돌려준다.
+    fn adapt(&mut self) -> Option<Quality> {
+        let sample = Sample {
+            dropped: self.dropped.swap(0, Ordering::Relaxed),
+            sent: self.stats.sent.swap(0, Ordering::Relaxed),
+            max_send_wait_ms: self.stats.max_wait_ms.swap(0, Ordering::Relaxed),
+            keyframe_requests: self.stats.keyframe_requests.swap(0, Ordering::Relaxed),
+        };
+        if self.quality != Quality::Auto {
+            return None;
+        }
+        self.controller.as_mut()?.push(sample)
+    }
+
+    fn start(conn: &quinn::Connection, display_id: u32, params: EncodeParams) -> Result<Self> {
         let (raw_tx, raw_rx) = sync_channel(1);
-        let capture = platform::start_capture(&opts, raw_tx)?;
+        let sink = FrameSink::new(raw_tx);
+        let dropped = sink.dropped.clone();
+        let opts = CaptureOptions { display_id, max_width: params.max_width, fps: params.fps };
+        let capture = platform::start_capture(&opts, sink)?;
+        let mut enc = platform::create_encoder(capture.width as usize, capture.height as usize, params.bitrate, params.fps)?;
+        let encoder = enc.name();
         let stop = Arc::new(AtomicBool::new(false));
         let keyframe = Arc::new(AtomicBool::new(false));
+        let stats = Arc::new(PipeStats::default());
+        let failed = Arc::new(AtomicBool::new(false));
         let (pkt_tx, mut pkt_rx) = mpsc::channel::<VideoPacket>(2);
 
         // 인코더 스레드: 블로킹 작업이라 tokio 밖에서 돈다.
         {
             let stop = stop.clone();
             let keyframe = keyframe.clone();
-            let fps = opts.fps as f32;
-            std::thread::Builder::new().name("legato-encoder".into()).spawn(move || {
-                let mut enc = match H264Encoder::new(bitrate, fps) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        tracing::error!("{e:#}");
-                        return;
-                    }
-                };
+            let stats = stats.clone();
+            let failed = failed.clone();
+            std::thread::Builder::new().name(format!("legato-encoder-{display_id}")).spawn(move || {
                 let mut seq = 0u64;
                 while !stop.load(Ordering::SeqCst) {
                     let raw = match raw_rx.recv_timeout(Duration::from_millis(200)) {
@@ -321,25 +502,32 @@ impl Pipeline {
                     if keyframe.swap(false, Ordering::SeqCst) {
                         enc.request_keyframe();
                     }
-                    match enc.encode(&raw.frame) {
+                    match enc.encode(&raw) {
                         Ok(Some(e)) => {
                             let pkt = VideoPacket {
+                                display_id,
                                 seq,
                                 capture_us: raw.capture_us,
                                 keyframe: e.keyframe,
-                                width: raw.frame.width as u32,
-                                height: raw.frame.height as u32,
+                                width: raw.width as u32,
+                                height: raw.height as u32,
                                 data: e.data,
                             };
                             seq += 1;
+                            drop(raw); // 캡처 버퍼를 빨리 돌려준다.
                             // 네트워크가 밀리면 여기서 기다린다. 그동안 새 캡처 프레임은 버려진다.
+                            let t = Instant::now();
                             if pkt_tx.blocking_send(pkt).is_err() {
                                 break;
                             }
+                            let waited = t.elapsed().as_millis() as u32;
+                            stats.sent.fetch_add(1, Ordering::Relaxed);
+                            stats.max_wait_ms.fetch_max(waited, Ordering::Relaxed);
                         }
                         Ok(None) => {}
                         Err(e) => {
-                            tracing::error!("{e:#}");
+                            tracing::error!("인코딩 실패: {e:#}");
+                            failed.store(true, Ordering::SeqCst);
                             break;
                         }
                     }
@@ -351,7 +539,8 @@ impl Pipeline {
         {
             let conn = conn.clone();
             let stop = stop.clone();
-            tokio::spawn(async move {
+            let rt = tokio::runtime::Handle::current();
+            rt.spawn(async move {
                 let mut uni = match conn.open_uni().await {
                     Ok(s) => s,
                     Err(e) => {
@@ -372,6 +561,19 @@ impl Pipeline {
             });
         }
 
-        Ok(Self { width: capture.width, height: capture.height, _capture: capture, stop, keyframe })
+        Ok(Self {
+            display_id,
+            quality: Quality::Balanced,
+            controller: None,
+            width: capture.width,
+            height: capture.height,
+            _capture: capture,
+            stop,
+            keyframe,
+            failed,
+            stats,
+            dropped,
+            encoder,
+        })
     }
 }

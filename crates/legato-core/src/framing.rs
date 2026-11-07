@@ -54,11 +54,13 @@ mod tests {
     #[tokio::test]
     async fn 왕복_직렬화() {
         let (mut a, mut b) = tokio::io::duplex(1024);
-        let msg = ClientMsg::Input(InputEvent::Key { code: "KeyA".into(), down: true });
+        let msg = ClientMsg::Input { display_id: 1, event: InputEvent::Key { code: "KeyA".into(), down: true } };
         write_msg(&mut a, &msg).await.unwrap();
         drop(a);
         let got: ClientMsg = read_msg(&mut b).await.unwrap().unwrap();
-        assert!(matches!(got, ClientMsg::Input(InputEvent::Key { ref code, down: true }) if code == "KeyA"));
+        assert!(
+            matches!(got, ClientMsg::Input { display_id: 1, event: InputEvent::Key { ref code, down: true } } if code == "KeyA")
+        );
         let end: Option<ClientMsg> = read_msg(&mut b).await.unwrap();
         assert!(end.is_none());
     }

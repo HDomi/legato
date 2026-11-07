@@ -1,9 +1,12 @@
 //! Legato 공통 코어: 프로토콜 정의, QUIC 전송, 인증, 코덱, 설정 파일 경로.
 
+pub mod adaptive;
 pub mod auth;
+pub mod clipboard;
 pub mod codec;
 pub mod framing;
 pub mod identity;
+pub mod keymap;
 pub mod known_hosts;
 pub mod paths;
 pub mod protocol;
