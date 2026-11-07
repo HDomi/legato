@@ -36,17 +36,14 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo clippy --locked -- -D warnings 2>&1 | tee ci-clippy.log
+          cargo clippy --locked --message-format=short -- -D warnings 2>&1 | tee ci-clippy.log
+      # 로그는 로그인해야 보이지만 annotation 은 공개 페이지에 보인다. 오류 줄을 annotation 으로 남긴다.
       - name: Failure summary
         if: failure()
         shell: bash
         run: |
-          {
-            echo "### ${{ matrix.os }} 실패 (오류 부분)"
-            echo '```'
-            grep -hE -A14 '^(error|warning)(\[|:)|panicked|FAILED' ci-test.log ci-clippy.log 2>/dev/null | head -400
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          grep -hE '(^|: )(error|warning)(\[[A-Za-z0-9_:]+\])?: |panicked|FAILED' ci-test.log ci-clippy.log 2>/dev/null \
+            | grep -v 'could not compile' | head -40 | sed 's/^/::error::/' || true
 
   app:
     runs-on: macos-26
@@ -73,9 +70,4 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          {
-            echo "### app 실패 (오류 부분)"
-            echo '```'
-            grep -hE -A14 '^(error|warning)(\[|:)|panicked|Error' ci-app.log 2>/dev/null | head -400
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          grep -hE '(^|: )(error|warning)(\[[A-Za-z0-9_:]+\])?: |panicked|Error' ci-app.log 2>/dev/null | head -40 | sed 's/^/::error::/' || true
