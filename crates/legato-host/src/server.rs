@@ -1,7 +1,7 @@
 //! 접속 수락, 인증, 영상 송출, 입력 처리.
 
-use std::collections::{HashMap, VecDeque};
-use std::net::SocketAddr;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use legato_core::adaptive::{AdaptiveController, Sample};
-use legato_core::auth::{AuthLimiter, PasswordRecord, channel_binding, match_slot, new_nonce};
+use legato_core::auth::{AuthLimiter, PasswordRecord, channel_binding, limiter_key, match_slot, new_nonce};
 use legato_core::clipboard::ClipboardSync;
 use legato_core::framing::{read_msg, read_msg_limited, read_tag, write_msg, write_tag};
 use legato_core::i18n::Lang;
@@ -32,6 +32,8 @@ pub struct ServerState {
     pub limits: EncodeParams,
     pub host_name: String,
     limiter: Mutex<AuthLimiter>,
+    /// 인증 진행 중인 주소(IPv6 는 /64). 같은 주소에서 동시에 여러 번 추측해 잠금을 피하지 못하게 한 번에 하나만 허용한다.
+    pending: Mutex<HashSet<IpAddr>>,
     /// 지금 화면을 보고 있는 세션 (번호, 연결). 한 번에 하나만.
     current: Mutex<Option<(u64, quinn::Connection)>>,
     next_id: AtomicU64,
@@ -45,6 +47,7 @@ impl ServerState {
             limits,
             host_name: host_name(),
             limiter: Mutex::new(AuthLimiter::default()),
+            pending: Mutex::new(HashSet::new()),
             current: Mutex::new(None),
             next_id: AtomicU64::new(1),
         }
@@ -52,24 +55,53 @@ impl ServerState {
 }
 
 fn host_name() -> String {
-    std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Legato 호스트".into())
+    // PATH 에 끼워 넣은 가짜 프로그램이 실행되지 않게 전체 경로나 환경 변수를 쓴다.
+    #[cfg(windows)]
+    let name = std::env::var("COMPUTERNAME").ok();
+    #[cfg(not(windows))]
+    let name = std::process::Command::new("/bin/hostname").output().ok().and_then(|o| String::from_utf8(o.stdout).ok());
+    name.map(|s| sanitize_name(s.trim())).filter(|s| !s.is_empty()).unwrap_or_else(|| "Legato".into())
+}
+
+/// 인증을 마치지 않은 연결의 최대 개수. 넘으면 새 연결은 바로 닫는다.
+const MAX_UNAUTHENTICATED: usize = 32;
+
+/// 인증 진행 중인 주소 표시를 연결이 끝나거나 인증을 마치면 지운다.
+struct PendingGuard<'a> {
+    state: &'a ServerState,
+    key: IpAddr,
+}
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        self.state.pending.lock().expect("뮤텍스").remove(&self.key);
+    }
 }
 
 /// 접속을 계속 받는다.
 pub async fn run(endpoint: quinn::Endpoint, state: Arc<ServerState>) -> Result<()> {
+    // 인증 전 연결 수를 세는 세마포어. 핸드셰이크부터 인증 끝까지 자리를 차지한다.
+    let unauth = Arc::new(tokio::sync::Semaphore::new(MAX_UNAUTHENTICATED));
     while let Some(incoming) = endpoint.accept().await {
+        let Ok(permit) = unauth.clone().try_acquire_owned() else {
+            tracing::warn!("{} 인증 전 연결이 너무 많아 거절", incoming.remote_address());
+            incoming.refuse();
+            continue;
+        };
         let state = state.clone();
         tokio::spawn(async move {
             let peer = incoming.remote_address();
-            match incoming.await {
+            // 핸드셰이크도 오래 걸리면 끊는다.
+            let incoming = match tokio::time::timeout(Duration::from_secs(10), incoming).await {
+                Ok(r) => r,
+                Err(_) => {
+                    tracing::debug!("{peer} 핸드셰이크 시간 초과");
+                    return;
+                }
+            };
+            let conn_permit = permit;
+            match incoming {
                 Ok(conn) => {
-                    if let Err(e) = handle_connection(conn.clone(), peer, state).await {
+                    if let Err(e) = handle_connection(conn.clone(), peer, state, conn_permit).await {
                         tracing::warn!("{peer} 세션 종료: {e:#}");
                         conn.close(1u32.into(), b"error");
                     }
@@ -106,8 +138,14 @@ fn sanitize_name(name: &str) -> String {
 /// 기존 세션을 닫을 때 쓰는 QUIC 종료 코드와 이유. 뷰어가 이 값으로 안내 문구를 고른다.
 pub const CLOSE_REPLACED: u32 = 6;
 
-async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc<ServerState>) -> Result<()> {
+async fn handle_connection(
+    conn: quinn::Connection,
+    peer: SocketAddr,
+    state: Arc<ServerState>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Result<()> {
     let ip = peer.ip();
+    let key = limiter_key(ip);
     let (mut send, mut recv) = tokio::time::timeout(Duration::from_secs(10), conn.accept_bi())
         .await
         .context("제어 스트림 대기 시간 초과")??;
@@ -137,6 +175,14 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         conn.close(2u32.into(), b"locked");
         return Ok(());
     }
+
+    // 같은 주소에서 이미 인증 중이면 거절한다 (병렬 추측 방지).
+    if !state.pending.lock().expect("뮤텍스").insert(key) {
+        tracing::warn!("{peer} 같은 주소에서 이미 인증 중이라 거절");
+        conn.close(4u32.into(), b"busy");
+        return Ok(());
+    }
+    let pending = PendingGuard { state: &state, key };
 
     // 1. Hello
     let hello: ClientMsg = tokio::time::timeout(Duration::from_secs(10), read_msg_limited(&mut recv, PRE_AUTH_MAX))
@@ -189,6 +235,8 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
     let matched = match_slot(&records, &nonce, &binding, &macs);
     let Some(slot) = matched else {
         state.limiter.lock().expect("뮤텍스").record_failure(ip);
+        // 실패를 기록했으니 다음 시도를 받아도 된다 (아래 대기 중에 온 시도가 거절되지 않게).
+        drop(pending);
         tracing::warn!("{peer} ({client_name}) 비밀번호 틀림");
         emit("auth_failed", serde_json::json!({ "peer": peer.to_string() }));
         let reason = vl.pick("비밀번호 또는 접속 코드가 맞지 않습니다", "Wrong password or access code").into();
@@ -200,6 +248,9 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         return Ok(());
     };
     state.limiter.lock().expect("뮤텍스").record_success(ip);
+    // 인증을 마쳤으므로 인증 전 자리와 진행 중 표시를 내놓는다.
+    drop(pending);
+    drop(permit);
     let via_access_code = is_code[slot];
 
     // 인증을 통과한 새 접속이 기존 세션을 넘겨받는다 (네트워크가 끊겼다 다시 붙는 경우 바로 들어오게).

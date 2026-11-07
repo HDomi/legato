@@ -45,6 +45,23 @@ pub struct Session {
     pub via_access_code: bool,
 }
 
+/// 호스트가 요구하는 PBKDF2 반복 횟수 하한. 가짜 호스트가 낮은 값을 보내 받은 응답을 빠르게 추측하지 못하게 한다.
+const MIN_ITERATIONS: u32 = 100_000;
+
+/// 인증 중 연결이 닫혔을 때 이유를 읽을 수 있는 문장으로 바꾼다.
+fn closed_during_auth(conn: &quinn::Connection, e: anyhow::Error) -> anyhow::Error {
+    match conn.close_reason() {
+        Some(quinn::ConnectionError::ApplicationClosed(c)) if c.reason.as_ref() == b"busy" => anyhow::anyhow!(
+            "{}",
+            t!(
+                "같은 주소에서 이미 인증 중입니다. 잠시 뒤에 다시 시도해 주세요",
+                "Another login from this address is in progress. Please try again shortly"
+            )
+        ),
+        _ => e,
+    }
+}
+
 /// 접속하고 비밀번호로 인증한다.
 /// 처음 보는 호스트는 상호 인증이 끝난 뒤 지문을 기억한다. 기억한 지문과 다르면 거부한다.
 pub async fn connect(
@@ -74,9 +91,12 @@ pub async fn connect(
             lang: legato_core::i18n::lang(),
         },
     )
-    .await?;
-    let challenge: ServerMsg =
-        read_msg(&mut recv).await?.context(t!("호스트가 연결을 닫았습니다", "The host closed the connection"))?;
+    .await
+    .map_err(|e| closed_during_auth(&conn, e))?;
+    let challenge: ServerMsg = read_msg(&mut recv)
+        .await
+        .map_err(|e| closed_during_auth(&conn, e))?
+        .context(t!("호스트가 연결을 닫았습니다", "The host closed the connection"))?;
     let (slots, nonce) = match challenge {
         ServerMsg::Challenge { slots, nonce } => (slots, nonce),
         ServerMsg::Error { message } => bail!("{message}"),
@@ -91,7 +111,7 @@ pub async fn connect(
             slots.len()
         );
     }
-    if let Some(s) = slots.iter().find(|s| !(10_000..=10_000_000).contains(&s.iterations)) {
+    if let Some(s) = slots.iter().find(|s| !(MIN_ITERATIONS..=10_000_000).contains(&s.iterations)) {
         bail!(
             "{} ({})",
             t!("호스트가 잘못된 인증 정보를 보냈습니다", "The host sent invalid auth parameters"),

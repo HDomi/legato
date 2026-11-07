@@ -31,6 +31,7 @@ const ko = {
   'connect.ended': '연결이 끝났습니다',
   'connect.notSaved': '저장하지 않았습니다: {reason}',
   'connect.trustNew': '새 지문 믿고 다시 접속',
+  'connect.typeCodeToTrust': '호스트 지문이 바뀌었습니다. 호스트에 직접 확인한 뒤 접속 코드를 입력하고 다시 접속해 주세요.',
   'connect.hostLocked': '호스트 화면이 잠겨 있습니다. 원격 창에서 비밀번호를 입력해 잠금을 해제해 주세요.',
 
   // 이 컴퓨터 열기
@@ -95,6 +96,9 @@ const ko = {
   'host.needCodeFirst': '고정 접속 코드를 먼저 정해 주세요',
   'host.loginAgentOn': '로그인 화면 접속을 켰습니다. 로그아웃한 상태에서도 고정 접속 코드로 들어올 수 있습니다.',
   'host.loginAgentOffDone': '로그인 화면 접속을 껐습니다.',
+  'host.loginAgentStale': '앱이 업데이트되었거나 접속 코드가 바뀌었습니다. 로그인 화면 접속에도 반영하려면 다시 적용해 주세요.',
+  'host.loginAgentReapply': '다시 적용',
+  'host.serviceStale': '앱이 업데이트되었습니다. 서비스도 새 버전을 쓰도록 다시 적용해 주세요.',
   'host.network':
     '외부 네트워크에서 접속하려면 공유기에서 UDP {port} 포트포워딩이 필요합니다. 가능하면 Tailscale · WireGuard 같은 VPN 안에서만 사용하시길 권장합니다.',
   'host.logs': '로그',
@@ -168,6 +172,7 @@ const en: Record<Key, string> = {
   'connect.ended': 'Connection ended',
   'connect.notSaved': 'Not saved: {reason}',
   'connect.trustNew': 'Trust the new fingerprint and reconnect',
+  'connect.typeCodeToTrust': 'The host fingerprint changed. Check it on the host, then type the access code and reconnect.',
   'connect.hostLocked': 'The host screen is locked. Type the password in the remote window to unlock it.',
 
   'host.waiting': 'Waiting for connections',
@@ -232,6 +237,9 @@ const en: Record<Key, string> = {
   'host.needCodeFirst': 'Set an access code first',
   'host.loginAgentOn': 'Login-window access is on. You can connect with the access code even when logged out.',
   'host.loginAgentOffDone': 'Login-window access is off.',
+  'host.loginAgentStale': 'The app was updated or the access code changed. Reapply to use them at the login window too.',
+  'host.loginAgentReapply': 'Reapply',
+  'host.serviceStale': 'The app was updated. Reapply so the service uses the new version too.',
   'host.network':
     'To connect from outside your network, forward UDP {port} on your router. Using it only inside a VPN such as Tailscale or WireGuard is recommended.',
   'host.logs': 'Logs',

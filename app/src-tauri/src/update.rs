@@ -155,8 +155,15 @@ fn release_file_url(version: &str, name: &str) -> String {
 /// 업데이트를 받아 검증하고 설치를 준비한다. 성공하면 앱을 끝내야 설치가 진행된다.
 /// `resume_host`: 다시 열린 앱이 호스트를 바로 켜도록 한다.
 pub fn install(version: &str, resume_host: bool) -> Result<(), String> {
-    if parse_version(version).is_none() {
+    let Some(wanted) = parse_version(version) else {
         return Err(format!("{}: {version}", crate::tr("버전 형식이 올바르지 않습니다", "Invalid version")));
+    };
+    // 예전 버전(알려진 취약점이 있을 수 있음)으로 되돌리는 설치는 하지 않는다.
+    if parse_version(env!("CARGO_PKG_VERSION")).is_some_and(|cur| wanted <= cur) {
+        return Err(format!(
+            "{}: {version}",
+            crate::tr("지금 버전보다 새 버전만 설치할 수 있습니다", "Only a newer version can be installed")
+        ));
     }
     let dir = cache_dir()?.join(version);
     let _ = std::fs::remove_dir_all(&dir);
@@ -206,7 +213,7 @@ fn current_bundle() -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn designated_requirement(app: &Path) -> Option<String> {
-    let out = Command::new("codesign").args(["-d", "-r-"]).arg(app).output().ok()?;
+    let out = Command::new("/usr/bin/codesign").args(["-d", "-r-"]).arg(app).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
     text.lines().find_map(|l| l.strip_prefix("designated => ").map(str::to_string))
 }
@@ -259,7 +266,8 @@ fn platform_install(dir: &Path, zip: &Path, version: &str, resume_host: bool) ->
     let _ = std::fs::remove_file(&probe);
 
     let unpack = dir.join("unpacked");
-    let st = Command::new("ditto").args(["-x", "-k"]).arg(zip).arg(&unpack).status().map_err(|e| e.to_string())?;
+    let st =
+        Command::new("/usr/bin/ditto").args(["-x", "-k"]).arg(zip).arg(&unpack).status().map_err(|e| e.to_string())?;
     if !st.success() {
         return Err(crate::tr("압축을 풀지 못했습니다", "Couldn't unpack the update"));
     }
@@ -273,7 +281,7 @@ fn platform_install(dir: &Path, zip: &Path, version: &str, resume_host: bool) ->
             "The downloaded app's version doesn't match the release",
         ));
     }
-    let ok = Command::new("codesign")
+    let ok = Command::new("/usr/bin/codesign")
         .args(["--verify", "--deep", "--strict"])
         .arg(&new_app)
         .status()
@@ -288,7 +296,7 @@ fn platform_install(dir: &Path, zip: &Path, version: &str, resume_host: bool) ->
     if let Some(req) = designated_requirement(&current)
         && !req.contains("cdhash")
     {
-        let st = Command::new("codesign")
+        let st = Command::new("/usr/bin/codesign")
             .arg("--verify")
             .arg(format!("-R={req}"))
             .arg(&new_app)
@@ -306,30 +314,34 @@ fn platform_install(dir: &Path, zip: &Path, version: &str, resume_host: bool) ->
     let log = dir.join("install.log");
     let script = dir.join("install.sh");
     let args = if resume_host { "--args --resume-host" } else { "" };
+    // 경로는 셸 작은따옴표로 감싸서 $, `, " 같은 문자가 들어 있어도 명령으로 해석되지 않게 한다.
+    let q = |p: &Path| format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"));
+    let old_app = PathBuf::from(format!("{}.old-update", current.display()));
     let body = format!(
         r#"#!/bin/bash
-exec >>"{log}" 2>&1
+exec >>{log} 2>&1
 echo "$(date) 업데이트 시작: v{version}"
 PID={pid}
 for i in $(seq 1 120); do kill -0 $PID 2>/dev/null || break; sleep 0.5; done
-CUR="{cur}"
-OLD="{cur}.old-update"
+CUR={cur}
+OLD={old}
 rm -rf "$OLD"
-if mv "$CUR" "$OLD" && ditto "{new}" "$CUR"; then
+if mv "$CUR" "$OLD" && /usr/bin/ditto {new} "$CUR"; then
   rm -rf "$OLD"
   # macOS 26 의 xattr 에는 -r 이 없어서 find 로 하나씩 지운다.
-  find "$CUR" -exec xattr -d com.apple.quarantine {{}} + 2>/dev/null
+  /usr/bin/find "$CUR" -exec /usr/bin/xattr -d com.apple.quarantine {{}} + 2>/dev/null
   echo "$(date) 교체 완료"
 else
   echo "$(date) 교체 실패, 원래 앱 복구"
   rm -rf "$CUR"; mv "$OLD" "$CUR"
 fi
-open "$CUR" {args}
+/usr/bin/open "$CUR" {args}
 "#,
-        log = log.display(),
+        log = q(&log),
         pid = std::process::id(),
-        cur = current.display(),
-        new = new_app.display(),
+        cur = q(&current),
+        old = q(&old_app),
+        new = q(&new_app),
     );
     std::fs::write(&script, body).map_err(|e| e.to_string())?;
     Command::new("/bin/bash")

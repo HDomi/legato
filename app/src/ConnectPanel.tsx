@@ -209,10 +209,13 @@ export default function ConnectPanel() {
                   <span className={`dot ${s.status}`} /> <span className="mono">{s.address}</span>
                   {s.message && <div className="muted small-text">{s.message}</div>}
                 </div>
-                {s.status === 'closed' && s.fingerprintChanged && (
-                  <button className="small danger" onClick={() => connect(s.address, { useSaved: s.useSaved, acceptNew: true })}>
+                {s.status === 'closed' && s.fingerprintChanged && !s.useSaved && password && (
+                  <button className="small danger" onClick={() => connect(s.address, { acceptNew: true })}>
                     {t('connect.trustNew')}
                   </button>
+                )}
+                {s.status === 'closed' && s.fingerprintChanged && (s.useSaved || !password) && (
+                  <span className="muted small-text">{t('connect.typeCodeToTrust')}</span>
                 )}
               </li>
             ))}

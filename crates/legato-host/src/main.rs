@@ -130,11 +130,15 @@ fn main() -> Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,quinn=warn".into());
     match &cli.log_file {
         Some(path) => {
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .with_context(|| format!("로그 파일 열기 실패: {}", path.display()))?;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.create(true).append(true);
+            // 로그에 접속 주소 등이 남으므로 본인만 읽게 만든다.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let file = opts.open(path).with_context(|| format!("로그 파일 열기 실패: {}", path.display()))?;
             tracing_subscriber::fmt()
                 .with_writer(std::sync::Mutex::new(file))
                 .with_ansi(false)
@@ -201,7 +205,8 @@ fn login_agent_cmd(action: ServiceCmd) -> Result<()> {
         ServiceCmd::Install => login_agent::install(&legato_core::paths::config_dir()?)?,
         ServiceCmd::Uninstall => login_agent::uninstall()?,
         ServiceCmd::Status { .. } => {
-            println!("{}", serde_json::json!({ "installed": login_agent::status(), "supported": true }));
+            let (installed, stale) = login_agent::status(&legato_core::paths::config_dir()?);
+            println!("{}", serde_json::json!({ "installed": installed, "stale": stale, "supported": true }));
             return Ok(());
         }
         ServiceCmd::Run => bail!(
@@ -245,8 +250,8 @@ fn service_cmd(action: ServiceCmd) -> Result<()> {
             println!("{}", serde_json::json!({ "ok": true }));
         }
         ServiceCmd::Status { json } => {
-            let (installed, running) = service::status();
-            let v = serde_json::json!({ "installed": installed, "running": running });
+            let (installed, running, stale) = service::status();
+            let v = serde_json::json!({ "installed": installed, "running": running, "stale": stale });
             if json {
                 println!("{v}")
             } else {
@@ -383,7 +388,8 @@ fn serve(
         );
     }
     // 표시 비밀번호: 없거나 매번 새로 만드는 설정이면 새로 만든다. 읽기 전용이면 저장하지 않는다.
-    if cfg.allow_display_password && (cfg.display_password.is_none() || cfg.rotate_display_password) {
+    // 읽기 전용(서비스·로그인 화면)에서는 저장된 값을 그대로 써서 앱 화면에 보이는 비밀번호와 맞춘다.
+    if cfg.allow_display_password && (cfg.display_password.is_none() || (cfg.rotate_display_password && !readonly)) {
         cfg.display_password = Some(generate_password());
         if !readonly {
             cfg.save()?;
@@ -417,7 +423,7 @@ fn serve(
     };
     let fp = id.fingerprint();
     if !platform::screen_capture_allowed() {
-        tracing::warn!("화면 기록 권한이 없어. 접속하면 캡처가 실패할 거야 (legato-host request-permissions)");
+        tracing::warn!("화면 기록 권한이 없습니다. 접속하면 화면 캡처가 실패합니다 (legato-host request-permissions)");
     }
 
     let _sleep_guard = if allow_sleep { None } else { platform::prevent_sleep() };

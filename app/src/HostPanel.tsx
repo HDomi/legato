@@ -15,10 +15,10 @@ export default function HostPanel() {
   const [editingCode, setEditingCode] = useState(false);
   const [code1, setCode1] = useState('');
   const [code2, setCode2] = useState('');
-  const [service, setService] = useState<{ installed: boolean; running: boolean; supported?: boolean } | null>(null);
+  const [service, setService] = useState<{ installed: boolean; running: boolean; stale?: boolean; supported?: boolean } | null>(null);
   const [serviceBusy, setServiceBusy] = useState(false);
   const [locked, setLocked] = useState(false);
-  const [loginAgent, setLoginAgent] = useState<{ installed: boolean; supported: boolean } | null>(null);
+  const [loginAgent, setLoginAgent] = useState<{ installed: boolean; stale?: boolean; supported: boolean } | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -295,6 +295,14 @@ export default function HostPanel() {
               {serviceBusy ? t('host.working') : service.installed ? t('host.serviceRemove') : t('host.serviceInstall')}
             </button>
           </div>
+          {service.installed && service.stale && (
+            <div className="row">
+              <span className="muted small-text">{t('host.serviceStale')}</span>
+              <button className="small primary" disabled={serviceBusy} onClick={() => changeService(true)}>
+                {t('host.loginAgentReapply')}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -315,6 +323,14 @@ export default function HostPanel() {
               <span className="muted small-text">{t('host.needCodeFirst')}</span>
             )}
           </div>
+          {loginAgent.installed && loginAgent.stale && (
+            <div className="row">
+              <span className="muted small-text">{t('host.loginAgentStale')}</span>
+              <button className="small primary" disabled={serviceBusy} onClick={() => changeLoginAgent(true)}>
+                {t('host.loginAgentReapply')}
+              </button>
+            </div>
+          )}
         </div>
       )}
 

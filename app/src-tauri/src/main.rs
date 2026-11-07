@@ -250,14 +250,17 @@ async fn service_change(install: bool) -> Result<(), String> {
         let action = if install { "install" } else { "uninstall" };
         // PowerShell 문자열은 작은따옴표 안에서 ' 를 '' 로 쓴다.
         let q = |s: &str| format!("'{}'", s.replace('\'', "''"));
-        let args = format!("@({}, {}, 'service', {})", q("--config-dir"), q(&dir.to_string_lossy()), q(action));
+        // Start-Process 는 배열 인자를 따옴표 없이 공백으로 이어 붙이므로, Windows 명령줄 규칙으로 직접 감싼 한 줄을 넘긴다.
+        let args =
+            ["--config-dir".to_string(), win_quote(&dir.to_string_lossy()), "service".into(), action.into()].join(" ");
         let script = format!(
             "$p = Start-Process -FilePath {} -ArgumentList {} -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode",
             q(&exe.to_string_lossy()),
-            args
+            q(&args)
         );
         let status = tauri::async_runtime::spawn_blocking(move || {
-            no_window(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script])).status()
+            no_window(Command::new(powershell_path()).args(["-NoProfile", "-NonInteractive", "-Command", &script]))
+                .status()
         })
         .await
         .map_err(|e| e.to_string())?
@@ -276,6 +279,38 @@ async fn service_change(install: bool) -> Result<(), String> {
         let _ = install;
         Err(tr("서비스 모드는 Windows 전용입니다", "Service mode is Windows only"))
     }
+}
+
+/// PowerShell 전체 경로 (PATH 에 끼워 넣은 같은 이름 프로그램이 관리자 권한 요청을 가로채지 못하게).
+#[cfg(windows)]
+fn powershell_path() -> PathBuf {
+    let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe")
+}
+
+/// 명령줄 인자 하나를 Windows 규칙(CommandLineToArgvW)대로 따옴표로 감싼다.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn win_quote(s: &str) -> String {
+    let mut out = String::from("\"");
+    let mut backslashes = 0;
+    for c in s.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.push_str(&"\\".repeat(backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.push_str(&"\\".repeat(backslashes));
+                out.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    out.push_str(&"\\".repeat(backslashes * 2));
+    out.push('"');
+    out
 }
 
 #[tauri::command]
@@ -307,10 +342,12 @@ async fn login_agent_change(install: bool) -> Result<(), String> {
                 "Legato 가 로그인 화면 접속 설정을 바꾸려고 합니다."
             }
         );
-        let out = tauri::async_runtime::spawn_blocking(move || Command::new("osascript").args(["-e", &apple]).output())
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
+        let out = tauri::async_runtime::spawn_blocking(move || {
+            Command::new("/usr/bin/osascript").args(["-e", &apple]).output()
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
         if out.status.success() {
             Ok(())
         } else {
@@ -358,17 +395,20 @@ fn connect(
     windowed: bool,
     accept_new_fingerprint: bool,
 ) -> Result<(), String> {
+    // 지문이 바뀐 호스트에는 저장된 코드를 자동으로 보내지 않는다 (가짜 호스트가 코드를 받아 오프라인 추측하는 것 방지).
+    if use_saved && accept_new_fingerprint {
+        return Err(tr(
+            "호스트 지문이 바뀌어 저장된 접속 코드를 자동으로 보내지 않습니다. 접속 코드를 직접 입력해 주세요.",
+            "The host fingerprint changed, so the saved access code won't be sent automatically. Please type the access code.",
+        ));
+    }
     let secret = if use_saved {
         saved_code(&address)?.ok_or_else(|| tr("저장된 접속 코드가 없습니다", "No saved access code"))?
     } else {
         password
     };
     let mut cmd = helper_cmd("legato-viewer")?;
-    cmd.arg(&address)
-        .env("LEGATO_PASSWORD", &secret)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.env("LEGATO_PASSWORD", &secret).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if windowed {
         cmd.arg("--windowed");
     }
@@ -378,6 +418,8 @@ fn connect(
     if accept_new_fingerprint {
         cmd.arg("--accept-new-fingerprint");
     }
+    // 주소가 '-' 로 시작해도 옵션으로 읽히지 않게 `--` 뒤에 둔다.
+    cmd.arg("--").arg(&address);
     let mut child = no_window(&mut cmd)
         .spawn()
         .map_err(|e| format!("{}: {e}", tr("뷰어를 실행하지 못했습니다", "Couldn't start the viewer")))?;
@@ -637,4 +679,16 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("Legato 앱 실행 실패");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::win_quote;
+
+    #[test]
+    fn 윈도우_인자_따옴표() {
+        assert_eq!(win_quote(r"C:\Users\John Doe\AppData"), r#""C:\Users\John Doe\AppData""#);
+        assert_eq!(win_quote(r"C:\dir\"), r#""C:\dir\\""#);
+        assert_eq!(win_quote(r#"a"b"#), r#""a\"b""#);
+    }
 }
