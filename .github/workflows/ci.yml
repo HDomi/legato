@@ -34,9 +34,6 @@ jobs:
           cargo test --locked 2>&1 | tee ci-test.log
       - name: Clippy
         shell: bash
-        # Windows 에서 큰 크레이트(windows) 검사 중 컴파일러 스택이 모자라 오류 없이 끝나는 경우가 있어 스택을 키운다.
-        env:
-          RUST_MIN_STACK: 67108864
         run: |
           set -o pipefail
           cargo clippy --locked --message-format=short -- -D warnings 2>&1 | tee ci-clippy.log

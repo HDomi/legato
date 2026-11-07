@@ -5,6 +5,7 @@
 //! - 보안 데스크톱(UAC 확인 창, 잠금 화면, 로그인 화면) 캡처와 입력
 //! - 관리자 권한으로 실행된 창에 입력 (UIPI 제한 없음)
 //! - Ctrl+Alt+Del (SendSAS, SoftwareSASGeneration 정책 필요)
+//!
 //! 세션이 바뀌거나(로그인·사용자 전환) 헬퍼가 끝나면 새 세션에 다시 띄운다.
 
 use std::ffi::{OsStr, OsString};
