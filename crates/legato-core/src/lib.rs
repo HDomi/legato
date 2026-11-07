@@ -5,6 +5,7 @@ pub mod auth;
 pub mod clipboard;
 pub mod codec;
 pub mod framing;
+pub mod i18n;
 pub mod identity;
 pub mod keymap;
 pub mod known_hosts;

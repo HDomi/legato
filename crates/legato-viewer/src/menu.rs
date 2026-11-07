@@ -3,6 +3,7 @@
 //! 기본 메뉴(⌘Q 종료 등)를 쓰지 않으므로 ⌘Q 같은 단축키가 원격으로 전달된다. 연결 끊기는 메뉴에서.
 
 use legato_core::protocol::{DisplayInfo, Quality};
+use legato_core::t;
 use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 pub const ID_DISCONNECT: &str = "disconnect";
@@ -45,39 +46,55 @@ impl ViewerMenu {
             "Legato",
             true,
             &[
-                &MenuItem::with_id(ID_DISCONNECT, format!("{host_name} 연결 끊기"), true, None),
+                &MenuItem::with_id(
+                    ID_DISCONNECT,
+                    match legato_core::i18n::lang() {
+                        legato_core::i18n::Lang::Ko => format!("{host_name} 연결 끊기"),
+                        legato_core::i18n::Lang::En => format!("Disconnect from {host_name}"),
+                    },
+                    true,
+                    None,
+                ),
                 &PredefinedMenuItem::separator(),
-                &PredefinedMenuItem::hide(Some("Legato 가리기")),
+                &PredefinedMenuItem::hide(Some(t!("Legato 가리기", "Hide Legato"))),
             ],
         )?;
-        let swap_item = CheckMenuItem::with_id(ID_SWAP, "Cmd ↔ Ctrl 바꾸기", true, swap, None);
-        let clip_item = CheckMenuItem::with_id(ID_CLIPBOARD, "클립보드 공유", true, true, None);
-        let caps_item = CheckMenuItem::with_id(ID_CAPS_HANGUL, "Caps Lock 을 한/영 키로", true, caps_hangul, None);
-        let quality_menu = Submenu::new("화질", true);
+        let swap_item = CheckMenuItem::with_id(ID_SWAP, t!("Cmd ↔ Ctrl 바꾸기", "Swap Cmd ↔ Ctrl"), true, swap, None);
+        let clip_item = CheckMenuItem::with_id(ID_CLIPBOARD, t!("클립보드 공유", "Share clipboard"), true, true, None);
+        let caps_item = CheckMenuItem::with_id(
+            ID_CAPS_HANGUL,
+            t!("Caps Lock 을 한/영 키로", "Caps Lock as Korean/English key"),
+            true,
+            caps_hangul,
+            None,
+        );
+        let quality_menu = Submenu::new(t!("화질", "Quality"), true);
         let mut qualities = Vec::new();
         for q in QUALITIES {
-            let item = CheckMenuItem::with_id(quality_id(q), q.label(), true, q == quality, None);
+            let item =
+                CheckMenuItem::with_id(quality_id(q), q.label(legato_core::i18n::lang()), true, q == quality, None);
             quality_menu.append(&item)?;
             qualities.push((q, item));
         }
-        let display_menu = Submenu::new("디스플레이", true);
+        let display_menu = Submenu::new(t!("디스플레이", "Displays"), true);
         let mut display_items = Vec::new();
         for (i, d) in displays.iter().enumerate() {
-            let label = format!("{} ({}x{}){}", d.name, d.width, d.height, if d.primary { " · 주" } else { "" });
+            let label =
+                format!("{} ({}x{}){}", d.name, d.width, d.height, if d.primary { t!(" · 주", " · main") } else { "" });
             let item =
                 CheckMenuItem::with_id(format!("{ID_DISPLAY_PREFIX}{}", d.id), label, true, open.contains(&d.id), None);
             display_menu.append(&item)?;
             display_items.push((d.id, item));
             let _ = i;
         }
-        let status = MenuItem::with_id("status", "연결 상태 확인 중…", false, None);
+        let status = MenuItem::with_id("status", t!("연결 상태 확인 중…", "Checking connection…"), false, None);
         let remote = Submenu::with_items(
-            "원격",
+            t!("원격", "Remote"),
             true,
             &[
                 &status,
                 &PredefinedMenuItem::separator(),
-                &MenuItem::with_id(ID_CAD, "Ctrl+Alt+Del 보내기", true, None),
+                &MenuItem::with_id(ID_CAD, t!("Ctrl+Alt+Del 보내기", "Send Ctrl+Alt+Del"), true, None),
                 &PredefinedMenuItem::separator(),
                 &quality_menu,
                 &display_menu,

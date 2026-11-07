@@ -41,7 +41,7 @@ impl Os {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
     /// 접속 직후 첫 메시지.
-    Hello { version: u32, client_name: String, client_os: Os },
+    Hello { version: u32, client_name: String, client_os: Os, lang: crate::i18n::Lang },
     /// 호스트 챌린지에 대한 응답. 입력한 비밀 하나로 슬롯마다 HMAC 을 계산해 같은 순서로 보낸다.
     AuthResponse { macs: Vec<[u8; 32]> },
     /// 이 디스플레이 영상을 보내 달라는 요청. 이미 보내는 중이면 새 화질로 다시 시작한다.
@@ -199,12 +199,13 @@ impl Quality {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    /// 메뉴·상태 표시용 이름.
+    pub fn label(self, lang: crate::i18n::Lang) -> &'static str {
         match self {
-            Quality::Auto => "자동",
-            Quality::High => "고화질",
-            Quality::Balanced => "균형",
-            Quality::Low => "절약",
+            Quality::Auto => lang.pick("자동", "Auto"),
+            Quality::High => lang.pick("고화질", "High"),
+            Quality::Balanced => lang.pick("균형", "Balanced"),
+            Quality::Low => lang.pick("절약", "Low"),
         }
     }
 }

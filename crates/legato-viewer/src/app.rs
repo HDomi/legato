@@ -129,7 +129,8 @@ impl App {
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
-                self.exit_message = Some(format!("창 생성 실패: {e}"));
+                self.exit_message =
+                    Some(format!("{}: {e}", legato_core::t!("창을 만들지 못했습니다", "Couldn't create a window")));
                 event_loop.exit();
                 return;
             }
@@ -137,7 +138,10 @@ impl App {
         let renderer = match Renderer::new(window.clone()) {
             Ok(r) => r,
             Err(e) => {
-                self.exit_message = Some(format!("렌더러 생성 실패: {e:#}"));
+                self.exit_message = Some(format!(
+                    "{}: {e:#}",
+                    legato_core::t!("화면 표시를 시작하지 못했습니다", "Couldn't start rendering")
+                ));
                 event_loop.exit();
                 return;
             }
@@ -290,12 +294,13 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Notice(msg) => {
                 for w in self.wins.values() {
                     let base = w.window.title();
-                    let base = base.split(" — 알림:").next().unwrap_or(&base).to_string();
-                    w.window.set_title(&format!("{base} — 알림: {msg}"));
+                    let mark = legato_core::t!(" — 알림: ", " — Notice: ");
+                    let base = base.split(mark).next().unwrap_or(&base).to_string();
+                    w.window.set_title(&format!("{base}{mark}{msg}"));
                 }
             }
             UserEvent::QualityChanged(d, q) => {
-                tracing::info!("디스플레이 {d} 자동 화질 → {}", q.label());
+                tracing::info!("디스플레이 {d} 자동 화질 → {}", q.label(legato_core::i18n::Lang::Ko));
                 self.auto_level.insert(d, q);
             }
             UserEvent::Stats(rtt) => {
@@ -314,11 +319,15 @@ impl ApplicationHandler<UserEvent> for App {
                 let level = match self.cfg.quality {
                     Quality::Auto => {
                         let l = self.auto_level.values().next().copied().unwrap_or(Quality::Balanced);
-                        format!("{} ({})", Quality::Auto.label(), l.label())
+                        let lang = legato_core::i18n::lang();
+                        format!("{} ({})", Quality::Auto.label(lang), l.label(lang))
                     }
-                    q => q.label().to_string(),
+                    q => q.label(legato_core::i18n::lang()).to_string(),
                 };
-                let text = format!("핑 {rtt}ms · {fps}fps · 디코딩 {dec}ms · {level}");
+                let text = match legato_core::i18n::lang() {
+                    legato_core::i18n::Lang::Ko => format!("핑 {rtt}ms · {fps}fps · 디코딩 {dec}ms · {level}"),
+                    legato_core::i18n::Lang::En => format!("Ping {rtt}ms · {fps}fps · decode {dec}ms · {level}"),
+                };
                 tracing::debug!("{text}");
                 if let Some(m) = &self.menu {
                     m.status.set_text(text);

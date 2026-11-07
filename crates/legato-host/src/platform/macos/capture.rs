@@ -28,7 +28,15 @@ pub fn request_screen_capture() -> bool {
 }
 
 pub fn list_displays() -> Result<Vec<DisplayInfo>> {
-    let content = SCShareableContent::get().map_err(|e| anyhow!("화면 목록 조회 실패 (화면 기록 권한 확인): {e:?}"))?;
+    let content = SCShareableContent::get().map_err(|e| {
+        anyhow!(
+            "{} ({e:?})",
+            legato_core::t!(
+                "화면 목록을 가져오지 못했습니다. 화면 기록 권한을 확인해 주세요",
+                "Couldn't list screens. Check Screen Recording permission"
+            )
+        )
+    })?;
     let main = CGDisplay::main().id;
     Ok(content
         .displays()
@@ -120,7 +128,15 @@ impl Drop for CaptureHandle {
 }
 
 pub fn start_capture(opts: &CaptureOptions, sink: FrameSink) -> Result<CaptureHandle> {
-    let content = SCShareableContent::get().map_err(|e| anyhow!("화면 목록 조회 실패 (화면 기록 권한 확인): {e:?}"))?;
+    let content = SCShareableContent::get().map_err(|e| {
+        anyhow!(
+            "{} ({e:?})",
+            legato_core::t!(
+                "화면 목록을 가져오지 못했습니다. 화면 기록 권한을 확인해 주세요",
+                "Couldn't list screens. Check Screen Recording permission"
+            )
+        )
+    })?;
     let displays = content.displays();
     let display = displays
         .iter()
@@ -152,6 +168,14 @@ pub fn start_capture(opts: &CaptureOptions, sink: FrameSink) -> Result<CaptureHa
             SCStreamOutputType::Screen,
         )
         .map_err(|e| anyhow!("캡처 핸들러 등록 실패: {e:?}"))?;
-    stream.start_capture().map_err(|e| anyhow!("캡처 시작 실패 (화면 기록 권한 확인): {e:?}"))?;
+    stream.start_capture().map_err(|e| {
+        anyhow!(
+            "{} ({e:?})",
+            legato_core::t!(
+                "화면 캡처를 시작하지 못했습니다. 화면 기록 권한을 확인해 주세요",
+                "Couldn't start screen capture. Check Screen Recording permission"
+            )
+        )
+    })?;
     Ok(CaptureHandle { stream, width, height })
 }

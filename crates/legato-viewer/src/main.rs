@@ -26,6 +26,7 @@ use legato_core::codec::I420Frame;
 use legato_core::framing::{read_msg, write_msg, write_tag};
 use legato_core::keymap::should_swap_cmd_ctrl;
 use legato_core::protocol::{ClientMsg, InputEvent, Os, Quality, ServerMsg, UNI_CLIPBOARD};
+use legato_core::t;
 use winit::event_loop::EventLoop;
 
 use crate::app::{App, AppConfig, UserEvent};
@@ -108,11 +109,16 @@ fn emit(event: &str, data: serde_json::Value) {
 /// QUIC 종료 이유를 사람이 읽을 문장으로 바꾼다.
 fn describe_close(e: &quinn::ConnectionError) -> String {
     match e {
-        quinn::ConnectionError::ApplicationClosed(c) if c.reason.as_ref() == b"replaced" => {
-            "다른 곳에서 이 호스트에 접속해서 이 연결은 끊겼어".into()
+        quinn::ConnectionError::ApplicationClosed(c) if c.reason.as_ref() == b"replaced" => t!(
+            "다른 곳에서 이 호스트에 접속해 이 연결은 끊어졌습니다",
+            "Another viewer connected to this host, so this connection was closed"
+        )
+        .into(),
+        quinn::ConnectionError::TimedOut => {
+            t!("호스트 응답이 끊겼습니다. 네트워크를 확인해 주세요", "The host stopped responding. Check your network")
+                .into()
         }
-        quinn::ConnectionError::TimedOut => "호스트 응답이 끊겼어 (네트워크 확인)".into(),
-        other => format!("연결 끊김: {other}"),
+        other => format!("{}: {other}", t!("연결이 끊어졌습니다", "Disconnected")),
     }
 }
 
@@ -128,9 +134,9 @@ fn resolve(host: &str) -> Result<(SocketAddr, String)> {
     };
     let addr = with_port
         .to_socket_addrs()
-        .with_context(|| format!("주소 해석 실패: {host}"))?
+        .with_context(|| format!("{}: {host}", t!("주소를 해석하지 못했습니다", "Couldn't resolve the address")))?
         .next()
-        .with_context(|| format!("주소 없음: {host}"))?;
+        .with_context(|| format!("{}: {host}", t!("주소를 찾지 못했습니다", "Address not found")))?;
     Ok((addr, with_port))
 }
 
@@ -152,8 +158,10 @@ fn main() {
         )
         .init();
     if let Err(e) = run(Cli::parse()) {
-        eprintln!("오류: {e:#}");
-        emit("closed", serde_json::json!({ "error": format!("{e:#}") }));
+        eprintln!("{}: {e:#}", t!("오류", "Error"));
+        // 앱이 언어와 무관하게 알아보도록 지문 변경은 코드로도 알린다.
+        let code = if e.downcast_ref::<net::FingerprintChanged>().is_some() { "fingerprint_changed" } else { "error" };
+        emit("closed", serde_json::json!({ "error": format!("{e:#}"), "code": code }));
         std::process::exit(1);
     }
 }
@@ -175,13 +183,14 @@ fn run(cli: Cli) -> Result<()> {
     for id in &open {
         if !session.displays.iter().any(|d| d.id == *id) {
             bail!(
-                "디스플레이 {id} 없음 (호스트 디스플레이: {:?})",
+                "{} {id} ({:?})",
+                t!("호스트에 이 디스플레이가 없습니다:", "The host has no display"),
                 session.displays.iter().map(|d| d.id).collect::<Vec<_>>()
             );
         }
     }
     if open.is_empty() {
-        bail!("호스트에 디스플레이가 없음");
+        bail!("{}", t!("호스트에 디스플레이가 없습니다", "The host has no displays"));
     }
     if cli.headless {
         open.truncate(1);
@@ -289,16 +298,16 @@ fn run(cli: Cli) -> Result<()> {
                             let _ = proxy.send_event(UserEvent::QualityChanged(display_id, quality));
                         }
                         Ok(Some(ServerMsg::Notice { message })) => {
-                            eprintln!("알림: {message}");
+                            eprintln!("{}: {message}", t!("알림", "Notice"));
                             emit("notice", serde_json::json!({ "message": message }));
                             let _ = proxy.send_event(UserEvent::Notice(message));
                         }
                         Ok(Some(ServerMsg::Error { message })) => break message,
                         Ok(Some(other)) => tracing::debug!("무시한 메시지: {other:?}"),
-                        Ok(None) => break "호스트가 연결을 닫았어".to_string(),
+                        Ok(None) => break t!("호스트가 연결을 닫았습니다", "The host closed the connection").to_string(),
                         Err(e) => break match conn.close_reason() {
                             Some(reason) => describe_close(&reason),
-                            None => format!("연결 끊김: {e:#}"),
+                            None => format!("{}: {e:#}", t!("연결이 끊어졌습니다", "Disconnected")),
                         },
                     },
                     e = conn.closed() => break describe_close(&e),
@@ -369,9 +378,9 @@ fn run_headless(
                 ServerMsg::StreamStarted { width, height, encoder, .. } => {
                     tracing::info!("영상 시작 {width}x{height} ({encoder})")
                 }
-                ServerMsg::Notice { message } => eprintln!("알림: {message}"),
+                ServerMsg::Notice { message } => eprintln!("{}: {message}", t!("알림", "Notice")),
                 ServerMsg::Error { message } => {
-                    eprintln!("오류: {message}");
+                    eprintln!("{}: {message}", t!("오류", "Error"));
                     break;
                 }
                 other => tracing::info!("메시지: {other:?}"),
@@ -405,10 +414,12 @@ fn run_headless(
     }
     // 호스트 쪽에서 먼저 끊었으면 이유를 알려준다.
     if let Some(reason) = conn.close_reason() {
-        eprintln!("알림: {}", describe_close(&reason));
+        eprintln!("{}: {}", t!("알림", "Notice"), describe_close(&reason));
     }
     conn.close(0u32.into(), b"bye");
-    let Some(last) = last else { bail!("30초 안에 디코딩된 프레임이 없음") };
+    let Some(last) = last else {
+        bail!("{}", t!("30초 안에 받은 화면이 없습니다", "No frames received within 30 seconds"))
+    };
     let elapsed = first_at.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
     let mut sorted = lat.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).expect("NaN 없음"));

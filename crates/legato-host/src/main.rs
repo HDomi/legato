@@ -19,6 +19,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use legato_core::auth::{MIN_ACCESS_CODE_LEN, PasswordRecord, generate_password};
 use legato_core::identity::short_fingerprint;
+use legato_core::t;
 
 use crate::config::{HostConfig, load_identity};
 
@@ -162,7 +163,13 @@ fn main() -> Result<()> {
             }
             if let Some(v) = allow_display_password {
                 if !v && cfg.access_code.is_none() {
-                    bail!("고정 접속 코드가 없으면 표시 비밀번호를 끌 수 없어 (아무도 접속 못 하게 됨)");
+                    bail!(
+                        "{}",
+                        t!(
+                            "고정 접속 코드가 없으면 표시 비밀번호를 끌 수 없습니다 (아무도 접속할 수 없게 됩니다)",
+                            "You can't turn off the display password without an access code (no one could connect)"
+                        )
+                    );
                 }
                 cfg.allow_display_password = v;
             }
@@ -197,7 +204,10 @@ fn login_agent_cmd(action: ServiceCmd) -> Result<()> {
             println!("{}", serde_json::json!({ "installed": login_agent::status(), "supported": true }));
             return Ok(());
         }
-        ServiceCmd::Run => bail!("로그인 화면 에이전트는 launchd 가 serve 로 실행해"),
+        ServiceCmd::Run => bail!(
+            "{}",
+            t!("로그인 화면 에이전트는 launchd 가 실행합니다", "The login-window agent is started by launchd")
+        ),
     }
     println!("{}", serde_json::json!({ "ok": true }));
     Ok(())
@@ -210,7 +220,13 @@ fn login_agent_cmd(action: ServiceCmd) -> Result<()> {
             println!("{}", serde_json::json!({ "installed": false, "supported": false }));
             Ok(())
         }
-        _ => bail!("로그인 화면 에이전트는 macOS 전용이야 (Windows 는 서비스 모드)"),
+        _ => bail!(
+            "{}",
+            t!(
+                "로그인 화면 에이전트는 macOS 전용입니다 (Windows 는 서비스 모드)",
+                "The login-window agent is macOS only (use service mode on Windows)"
+            )
+        ),
     }
 }
 
@@ -231,7 +247,11 @@ fn service_cmd(action: ServiceCmd) -> Result<()> {
         ServiceCmd::Status { json } => {
             let (installed, running) = service::status();
             let v = serde_json::json!({ "installed": installed, "running": running });
-            if json { println!("{v}") } else { println!("설치 {installed}, 실행 {running}") }
+            if json {
+                println!("{v}")
+            } else {
+                println!("{}: {installed}, {}: {running}", t!("설치됨", "installed"), t!("실행 중", "running"))
+            }
         }
         ServiceCmd::Run => service::run_dispatcher()?,
     }
@@ -246,7 +266,7 @@ fn service_cmd(action: ServiceCmd) -> Result<()> {
             println!("{}", serde_json::json!({ "installed": false, "running": false, "supported": false }));
             Ok(())
         }
-        _ => bail!("서비스 모드는 Windows 전용이야"),
+        _ => bail!("{}", t!("서비스 모드는 Windows 전용입니다", "Service mode is Windows only")),
     }
 }
 
@@ -263,7 +283,7 @@ fn set_password(generate: bool, json: bool) -> Result<()> {
     } else {
         let p = read_stdin_line()?;
         if p.chars().count() < 8 {
-            bail!("비밀번호는 8자 이상이어야 해");
+            bail!("{}", t!("비밀번호는 8자 이상이어야 합니다", "The password must be at least 8 characters"));
         }
         p
     };
@@ -273,7 +293,7 @@ fn set_password(generate: bool, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::json!({ "password": password }));
     } else {
-        println!("표시 비밀번호: {password}");
+        println!("{}: {password}", t!("표시 비밀번호", "Display password"));
     }
     Ok(())
 }
@@ -281,11 +301,24 @@ fn set_password(generate: bool, json: bool) -> Result<()> {
 fn set_access_code() -> Result<()> {
     let code = read_stdin_line()?;
     if code.chars().count() < MIN_ACCESS_CODE_LEN {
-        bail!("고정 접속 코드는 {MIN_ACCESS_CODE_LEN}자 이상이어야 해");
+        bail!(
+            "{}",
+            match legato_core::i18n::lang() {
+                legato_core::i18n::Lang::Ko => format!("고정 접속 코드는 {MIN_ACCESS_CODE_LEN}자 이상이어야 합니다"),
+                legato_core::i18n::Lang::En =>
+                    format!("The access code must be at least {MIN_ACCESS_CODE_LEN} characters"),
+            }
+        );
     }
     let mut cfg = HostConfig::load()?;
     if cfg.display_password.as_deref() == Some(code.as_str()) {
-        bail!("고정 접속 코드는 표시 비밀번호와 달라야 해");
+        bail!(
+            "{}",
+            t!(
+                "고정 접속 코드는 표시 비밀번호와 달라야 합니다",
+                "The access code must differ from the display password"
+            )
+        );
     }
     cfg.access_code = Some(PasswordRecord::new(&code));
     cfg.save()?;
@@ -341,7 +374,13 @@ fn serve(
     let mut cfg = HostConfig::load()?;
     if !cfg.allow_display_password && cfg.access_code.is_none() {
         // 설정 파일을 직접 고친 경우. 아무도 못 들어오는 상태로는 열지 않는다.
-        bail!("표시 비밀번호가 꺼져 있고 고정 접속 코드도 없어서 접속할 방법이 없어");
+        bail!(
+            "{}",
+            t!(
+                "표시 비밀번호가 꺼져 있고 고정 접속 코드도 없어 접속할 방법이 없습니다",
+                "The display password is off and there is no access code, so no one can connect"
+            )
+        );
     }
     // 표시 비밀번호: 없거나 매번 새로 만드는 설정이면 새로 만든다. 읽기 전용이면 저장하지 않는다.
     if cfg.allow_display_password && (cfg.display_password.is_none() || cfg.rotate_display_password) {
@@ -352,7 +391,7 @@ fn serve(
     }
     let display = if cfg.allow_display_password {
         let pw = cfg.display_password.clone().expect("위에서 채움");
-        eprintln!("표시 비밀번호: {pw}");
+        eprintln!("{}: {pw}", t!("표시 비밀번호", "Display password"));
         events::emit("display_password", serde_json::json!({ "password": pw }));
         Some(PasswordRecord::new(&pw))
     } else {
@@ -363,7 +402,14 @@ fn serve(
         // 읽기 전용: 신원 파일이 없으면 만들지 않고 멈춘다 (root 소유 파일이 생기지 않게).
         let path = legato_core::paths::config_dir()?.join("identity.json");
         if !path.exists() {
-            bail!("신원 파일이 없어 ({}). 먼저 앱에서 호스트를 한 번 켜줘", path.display());
+            bail!(
+                "{} ({})",
+                t!(
+                    "신원 파일이 없습니다. 먼저 앱에서 호스트를 한 번 켜 주세요",
+                    "No identity file. Turn the host on once in the app first"
+                ),
+                path.display()
+            );
         }
         load_identity()?
     } else {

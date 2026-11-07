@@ -136,8 +136,23 @@ pub async fn connect(addr: SocketAddr, expected: Option<String>) -> Result<Conne
     let connecting = endpoint.connect(addr, "legato.local")?;
     let connection = tokio::time::timeout(Duration::from_secs(8), connecting)
         .await
-        .map_err(|_| anyhow!("{addr} 응답 없음 (포트·방화벽 확인)"))?
-        .with_context(|| format!("{addr} 연결 실패"))?;
+        .map_err(|_| {
+            anyhow!(
+                "{}",
+                crate::t!(
+                    format!("{addr} 에서 응답이 없습니다. 호스트가 켜져 있는지, 포트·방화벽을 확인해 주세요").as_str(),
+                    format!("No response from {addr}. Check that the host is on and the port/firewall allows it")
+                        .as_str()
+                )
+            )
+        })?
+        .with_context(|| {
+            crate::t!(
+                format!("{addr} 에 연결하지 못했습니다").as_str(),
+                format!("Could not connect to {addr}").as_str()
+            )
+            .to_string()
+        })?;
     let fingerprint = seen.lock().expect("뮤텍스").clone().ok_or_else(|| anyhow!("서버 인증서를 받지 못함"))?;
     Ok(Connected { endpoint, connection, fingerprint })
 }

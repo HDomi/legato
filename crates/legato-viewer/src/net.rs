@@ -2,11 +2,35 @@
 
 use std::net::SocketAddr;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use legato_core::auth::{channel_binding, compute_mac, compute_server_mac, derive_key, mac_eq};
 use legato_core::framing::{read_msg, write_msg};
 use legato_core::known_hosts::KnownHosts;
 use legato_core::protocol::{ClientMsg, DisplayInfo, MAX_AUTH_SLOTS, Os, PROTOCOL_VERSION, ServerMsg};
+use legato_core::t;
+
+/// 호스트 인증서 지문이 기억한 것과 다름 (앱이 "새 지문 믿고 다시 접속" 을 보여주는 데 쓴다).
+#[derive(Debug)]
+pub struct FingerprintChanged(pub String);
+
+impl std::fmt::Display for FingerprintChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match legato_core::i18n::lang() {
+            legato_core::i18n::Lang::Ko => write!(
+                f,
+                "{} 의 인증서 지문이 예전과 다릅니다. 호스트를 다시 설치했거나 중간에서 가로채는 중일 수 있습니다. 호스트 화면의 지문과 같은지 확인한 뒤에만 새 지문을 믿고 다시 접속해 주세요.",
+                self.0
+            ),
+            legato_core::i18n::Lang::En => write!(
+                f,
+                "The certificate fingerprint of {} has changed. The host may have been reinstalled, or someone may be intercepting the connection. Only trust the new fingerprint after checking it matches the one shown on the host.",
+                self.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FingerprintChanged {}
 
 /// 인증까지 끝난 세션.
 pub struct Session {
@@ -33,10 +57,7 @@ pub async fn connect(
     let expected = if accept_new_fingerprint { None } else { known.get(host_key).map(str::to_string) };
     let c = legato_core::transport::connect(addr, expected.clone()).await.map_err(|e| {
         if expected.is_some() && format!("{e:#}").contains("지문 불일치") {
-            anyhow!(
-                "{host_key} 의 인증서 지문이 예전과 달라. 호스트를 다시 설치했거나 중간에서 가로채는 중일 수 있어. \
-                 확실하면 --accept-new-fingerprint 로 다시 접속해 ({e:#})"
-            )
+            anyhow::Error::new(FingerprintChanged(host_key.to_string()))
         } else {
             e
         }
@@ -46,20 +67,36 @@ pub async fn connect(
 
     write_msg(
         &mut send,
-        &ClientMsg::Hello { version: PROTOCOL_VERSION, client_name: client_name(), client_os: Os::current() },
+        &ClientMsg::Hello {
+            version: PROTOCOL_VERSION,
+            client_name: client_name(),
+            client_os: Os::current(),
+            lang: legato_core::i18n::lang(),
+        },
     )
     .await?;
-    let challenge: ServerMsg = read_msg(&mut recv).await?.context("호스트가 연결을 닫음")?;
+    let challenge: ServerMsg =
+        read_msg(&mut recv).await?.context(t!("호스트가 연결을 닫았습니다", "The host closed the connection"))?;
     let (slots, nonce) = match challenge {
         ServerMsg::Challenge { slots, nonce } => (slots, nonce),
         ServerMsg::Error { message } => bail!("{message}"),
-        other => bail!("예상하지 못한 메시지: {other:?}"),
+        other => {
+            bail!("{} ({other:?})", t!("호스트가 예상하지 못한 응답을 보냈습니다", "Unexpected reply from the host"))
+        }
     };
     if slots.is_empty() || slots.len() > MAX_AUTH_SLOTS {
-        bail!("호스트가 이상한 인증 슬롯 수를 보냄: {}", slots.len());
+        bail!(
+            "{} ({})",
+            t!("호스트가 잘못된 인증 정보를 보냈습니다", "The host sent invalid auth parameters"),
+            slots.len()
+        );
     }
     if let Some(s) = slots.iter().find(|s| !(10_000..=10_000_000).contains(&s.iterations)) {
-        bail!("호스트가 이상한 PBKDF2 반복 횟수를 보냄: {}", s.iterations);
+        bail!(
+            "{} ({})",
+            t!("호스트가 잘못된 인증 정보를 보냈습니다", "The host sent invalid auth parameters"),
+            s.iterations
+        );
     }
     let binding = channel_binding(&conn)?;
     let password = password.to_string();
@@ -72,18 +109,28 @@ pub async fn connect(
     let macs = keys.iter().map(|k| compute_mac(k, &nonce, &binding)).collect();
     write_msg(&mut send, &ClientMsg::AuthResponse { macs }).await?;
 
-    let reply: ServerMsg = read_msg(&mut recv).await?.context("호스트가 인증 중 연결을 닫음")?;
+    let reply: ServerMsg = read_msg(&mut recv)
+        .await?
+        .context(t!("호스트가 인증 중에 연결을 닫았습니다", "The host closed the connection during authentication"))?;
     let (host_name, host_os, displays, via_access_code) = match reply {
         ServerMsg::AuthOk { slot, via_access_code, server_mac, host_name, host_os, displays } => {
             let key = keys.get(slot as usize).context("호스트가 없는 슬롯 번호를 보냄")?;
             if !mac_eq(&server_mac, &compute_server_mac(key, &nonce, &binding)) {
-                bail!("호스트가 비밀번호를 증명하지 못했어. 가짜 호스트일 수 있어서 연결을 끊었어");
+                bail!(
+                    "{}",
+                    t!(
+                        "호스트가 비밀번호를 증명하지 못했습니다. 가짜 호스트일 수 있어 연결을 끊었습니다",
+                        "The host couldn't prove it knows the password. It may be an impostor, so the connection was closed"
+                    )
+                );
             }
             (host_name, host_os, displays, via_access_code)
         }
-        ServerMsg::AuthFailed { reason } => bail!("인증 실패: {reason}"),
+        ServerMsg::AuthFailed { reason } => bail!("{}: {reason}", t!("인증 실패", "Authentication failed")),
         ServerMsg::Error { message } => bail!("{message}"),
-        other => bail!("예상하지 못한 메시지: {other:?}"),
+        other => {
+            bail!("{} ({other:?})", t!("호스트가 예상하지 못한 응답을 보냈습니다", "Unexpected reply from the host"))
+        }
     };
     if expected.as_deref() != Some(c.fingerprint.as_str()) {
         known.set(host_key, &c.fingerprint)?;

@@ -12,6 +12,7 @@ use legato_core::adaptive::{AdaptiveController, Sample};
 use legato_core::auth::{AuthLimiter, PasswordRecord, channel_binding, match_slot, new_nonce};
 use legato_core::clipboard::ClipboardSync;
 use legato_core::framing::{read_msg, read_msg_limited, read_tag, write_msg, write_tag};
+use legato_core::i18n::Lang;
 use legato_core::protocol::{
     ClientMsg, EncodeParams, InputEvent, MAX_CLIPBOARD_BYTES, Os, PROTOCOL_VERSION, Quality, ServerMsg, UNI_CLIPBOARD,
     UNI_VIDEO, VideoPacket,
@@ -115,18 +116,22 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
     if let Err(remaining) = locked {
         tracing::warn!("{peer} 잠김 상태에서 접속 시도 ({}초 남음)", remaining.as_secs());
         // 뷰어가 이유를 알 수 있게 메시지를 보내고 닫는다. 비밀번호 확인은 아예 하지 않는다.
-        let _ = tokio::time::timeout(Duration::from_secs(5), read_msg_limited::<_, ClientMsg>(&mut recv, PRE_AUTH_MAX))
-            .await;
-        write_msg(
-            &mut send,
-            &ServerMsg::Error {
-                message: format!(
-                    "비밀번호를 너무 많이 틀려서 잠겼어. {}초 뒤에 다시 시도해",
-                    remaining.as_secs().max(1)
-                ),
-            },
+        // 뷰어 언어를 알려고 Hello 만 읽는다 (비밀번호 확인은 하지 않는다).
+        let lang = match tokio::time::timeout(
+            Duration::from_secs(5),
+            read_msg_limited::<_, ClientMsg>(&mut recv, PRE_AUTH_MAX),
         )
-        .await?;
+        .await
+        {
+            Ok(Ok(Some(ClientMsg::Hello { lang, .. }))) => lang,
+            _ => Lang::Ko,
+        };
+        let secs = remaining.as_secs().max(1);
+        let message = match lang {
+            Lang::Ko => format!("비밀번호를 여러 번 틀려서 잠시 잠겼습니다. {secs}초 뒤에 다시 시도해 주세요."),
+            Lang::En => format!("Too many wrong attempts. Please try again in {secs} seconds."),
+        };
+        write_msg(&mut send, &ServerMsg::Error { message }).await?;
         send.finish().ok();
         tokio::time::sleep(Duration::from_millis(200)).await;
         conn.close(2u32.into(), b"locked");
@@ -138,7 +143,7 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         .await
         .context("Hello 대기 시간 초과")??
         .context("Hello 전에 스트림 종료")?;
-    let ClientMsg::Hello { version, client_name, client_os } = hello else {
+    let ClientMsg::Hello { version, client_name, client_os, lang: vl } = hello else {
         bail!("첫 메시지가 Hello 가 아님")
     };
     let client_name = sanitize_name(&client_name);
@@ -146,7 +151,14 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         write_msg(
             &mut send,
             &ServerMsg::Error {
-                message: format!("프로토콜 버전 불일치 (호스트 {PROTOCOL_VERSION}, 뷰어 {version})")
+                message: match vl {
+                    Lang::Ko => format!(
+                        "호스트와 뷰어의 버전이 맞지 않습니다 (프로토콜 호스트 {PROTOCOL_VERSION}, 뷰어 {version}). 두 기기 모두 최신 버전으로 업데이트해 주세요."
+                    ),
+                    Lang::En => format!(
+                        "Host and viewer versions don't match (protocol host {PROTOCOL_VERSION}, viewer {version}). Please update both to the latest version."
+                    ),
+                }
             },
         )
         .await?;
@@ -179,7 +191,8 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         state.limiter.lock().expect("뮤텍스").record_failure(ip);
         tracing::warn!("{peer} ({client_name}) 비밀번호 틀림");
         emit("auth_failed", serde_json::json!({ "peer": peer.to_string() }));
-        write_msg(&mut send, &ServerMsg::AuthFailed { reason: "비밀번호 또는 접속 코드가 틀렸어".into() }).await?;
+        let reason = vl.pick("비밀번호 또는 접속 코드가 맞지 않습니다", "Wrong password or access code").into();
+        write_msg(&mut send, &ServerMsg::AuthFailed { reason }).await?;
         send.finish().ok();
         // 메시지가 전달될 시간을 잠깐 준다.
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -204,7 +217,10 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         Ok(d) => d,
         Err(e) => {
             // 화면 기록 권한이 없을 때 등. 뷰어가 이유를 볼 수 있게 보내고 닫는다.
-            let message = format!("호스트 화면을 가져올 수 없어: {e:#}");
+            let message = match vl {
+                Lang::Ko => format!("호스트 화면을 가져올 수 없습니다 (화면 기록 권한을 확인해 주세요): {e:#}"),
+                Lang::En => format!("Can't capture the host screen (check Screen Recording permission): {e:#}"),
+            };
             write_msg(&mut send, &ServerMsg::Error { message: message.clone() }).await?;
             send.finish().ok();
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -265,7 +281,11 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
 
     if !platform::accessibility_trusted() {
         let _ = out_tx.send(ServerMsg::Notice {
-            message: "호스트에 입력 권한(손쉬운 사용)이 없어서 마우스·키보드 조작이 안 돼. 호스트에서 권한을 허용해줘"
+            message: vl
+                .pick(
+                    "호스트에 입력 권한(손쉬운 사용)이 없어 마우스·키보드 조작이 되지 않습니다. 호스트에서 권한을 허용해 주세요.",
+                    "The host has no input permission (Accessibility), so mouse and keyboard won't work. Please allow it on the host.",
+                )
                 .into(),
         });
     }
@@ -324,7 +344,10 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
                                     pipelines.insert(display_id, p);
                                 }
                                 Err(e) => {
-                                    let message = format!("화면 캡처를 시작할 수 없어: {e:#}");
+                                    let message = match vl {
+                                        Lang::Ko => format!("화면 캡처를 시작할 수 없습니다: {e:#}"),
+                                        Lang::En => format!("Couldn't start screen capture: {e:#}"),
+                                    };
                                     let _ = out_tx.send(ServerMsg::Error { message: message.clone() });
                                     tokio::time::sleep(Duration::from_millis(200)).await;
                                     bail!(message);
@@ -390,9 +413,18 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
                         drop(old);
                         old_restarts += 1;
                         if old_restarts > 5 {
-                            bail!("화면 인코딩이 계속 실패해서 연결을 끊었어");
+                            let message = vl
+                                .pick(
+                                    "화면 인코딩이 계속 실패해 연결을 끊었습니다",
+                                    "Disconnected because video encoding kept failing",
+                                )
+                                .to_string();
+                            let _ = out_tx.send(ServerMsg::Error { message });
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            bail!("화면 인코딩이 계속 실패해 연결을 끊음");
                         }
-                        let _ = out_tx.send(ServerMsg::Notice { message: "화면 인코딩 오류로 영상을 다시 시작했어".into() });
+                        let message = vl.pick("화면 인코딩 오류가 있어 영상을 다시 시작했습니다", "Video restarted after an encoding error").into();
+                        let _ = out_tx.send(ServerMsg::Notice { message });
                         let auto = (quality == Quality::Auto).then_some((controller, level));
                         match start_pipeline(&conn, &state, display_id, quality, auto).await {
                             Ok(p) => {
@@ -404,7 +436,7 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
                     }
                     for (display_id, level) in changes {
                         let mut old = pipelines.remove(&display_id).expect("위에서 찾음");
-                        tracing::info!("디스플레이 {display_id} 자동 화질: {}", level.label());
+                        tracing::info!("디스플레이 {display_id} 자동 화질: {}", level.label(Lang::Ko));
                         let controller = old.controller.take();
                         drop(old); // 이전 캡처를 먼저 멈춘다.
                         match start_pipeline(&conn, &state, display_id, Quality::Auto, Some((controller, level))).await {
@@ -444,7 +476,13 @@ async fn blocking_with_timeout<T: Send + 'static>(f: impl FnOnce() -> Result<T> 
     match tokio::time::timeout(Duration::from_secs(15), tokio::task::spawn_blocking(f)).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => bail!("작업 스레드 실패: {e}"),
-        Err(_) => bail!("응답 없음. 호스트에 화면 기록 권한 확인 창이 떠 있는지 봐줘"),
+        Err(_) => bail!(
+            "{}",
+            legato_core::t!(
+                "호스트가 응답하지 않습니다. 호스트에 화면 기록 권한 확인 창이 떠 있는지 확인해 주세요",
+                "The host isn't responding. Check whether a Screen Recording permission prompt is open on the host"
+            )
+        ),
     }
 }
 
