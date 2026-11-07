@@ -53,7 +53,16 @@ jobs:
           done
 
   app:
-    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows 도 빌드한다 (앱의 Windows 전용 코드: 서비스 설치 등).
+        include:
+          - os: macos-26
+            bundles: app
+          - os: windows-latest
+            bundles: nsis
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -72,7 +81,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          npx tauri build --bundles app 2>&1 | tee ../ci-app.log
+          npx tauri build --bundles ${{ matrix.bundles }} 2>&1 | tee ../ci-app.log
       - name: Failure summary
         if: failure()
         shell: bash
