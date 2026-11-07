@@ -30,6 +30,8 @@ pub enum UserEvent {
     QualityChanged(u32, Quality),
     /// 1초마다: 왕복 시간 (ms).
     Stats(u32),
+    /// 호스트 화면 잠금 상태.
+    Locked(bool),
 }
 
 /// 원격 디스플레이 하나를 보여주는 창.
@@ -70,6 +72,8 @@ pub struct App {
     last_caps: Option<(bool, std::time::Instant)>,
     /// 자동 화질일 때 디스플레이별 현재 단계.
     auto_level: HashMap<u32, Quality>,
+    /// 호스트 화면이 잠겨 있는지.
+    host_locked: bool,
     pub exit_message: Option<String>,
 }
 
@@ -90,6 +94,7 @@ impl App {
             started: false,
             last_caps: None,
             auto_level: HashMap::new(),
+            host_locked: false,
             exit_message: None,
         }
     }
@@ -200,6 +205,9 @@ impl App {
     fn handle_menu(&mut self, event_loop: &ActiveEventLoop, id: &str) {
         match id {
             menu::ID_DISCONNECT => event_loop.exit(),
+            menu::ID_WAKE => {
+                let _ = self.ctl.send(ClientMsg::WakeScreen);
+            }
             menu::ID_CAD => {
                 if let Some(d) = self.wins.values().next().map(|w| w.display_id) {
                     self.send_input(d, InputEvent::SecureAttention);
@@ -303,6 +311,24 @@ impl ApplicationHandler<UserEvent> for App {
                 tracing::info!("디스플레이 {d} 자동 화질 → {}", q.label(legato_core::i18n::Lang::Ko));
                 self.auto_level.insert(d, q);
             }
+            UserEvent::Locked(locked) => {
+                self.host_locked = locked;
+                let notice = locked.then(|| {
+                    legato_core::t!(
+                        "호스트 화면이 잠겨 있습니다. 원격 키보드로 비밀번호를 입력하고 Enter 를 눌러 잠금을 해제해 주세요",
+                        "The host screen is locked. Type the password with the remote keyboard and press Enter to unlock"
+                    )
+                });
+                for w in self.wins.values() {
+                    let base = w.window.title();
+                    let mark = legato_core::t!(" — 알림: ", " — Notice: ");
+                    let base = base.split(mark).next().unwrap_or(&base).to_string();
+                    match notice {
+                        Some(n) => w.window.set_title(&format!("{base}{mark}{n}")),
+                        None => w.window.set_title(&base),
+                    }
+                }
+            }
             UserEvent::Stats(rtt) => {
                 // 디스플레이별 지난 1초 fps 와 가장 오래 걸린 디코딩 시간.
                 let routes = self.routes.lock().expect("뮤텍스");
@@ -324,13 +350,14 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     q => q.label(legato_core::i18n::lang()).to_string(),
                 };
+                let lock = if self.host_locked { legato_core::t!("🔒 잠김 · ", "🔒 Locked · ") } else { "" };
                 let text = match legato_core::i18n::lang() {
                     legato_core::i18n::Lang::Ko => format!("핑 {rtt}ms · {fps}fps · 디코딩 {dec}ms · {level}"),
                     legato_core::i18n::Lang::En => format!("Ping {rtt}ms · {fps}fps · decode {dec}ms · {level}"),
                 };
                 tracing::debug!("{text}");
                 if let Some(m) = &self.menu {
-                    m.status.set_text(text);
+                    m.status.set_text(format!("{lock}{text}"));
                 }
             }
             UserEvent::Menu(id) => self.handle_menu(event_loop, &id),

@@ -294,6 +294,10 @@ fn run(cli: Cli) -> Result<()> {
                         Ok(Some(ServerMsg::StreamStarted { display_id, width, height, encoder })) => {
                             tracing::info!("디스플레이 {display_id} 영상 시작 {width}x{height} ({encoder})");
                         }
+                        Ok(Some(ServerMsg::LockState { locked })) => {
+                            emit("lock_state", serde_json::json!({ "locked": locked }));
+                            let _ = proxy.send_event(UserEvent::Locked(locked));
+                        }
                         Ok(Some(ServerMsg::QualityChanged { display_id, quality })) => {
                             let _ = proxy.send_event(UserEvent::QualityChanged(display_id, quality));
                         }

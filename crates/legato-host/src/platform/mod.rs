@@ -157,8 +157,8 @@ pub fn macos_ime_toggle() -> Option<String> {
 }
 #[cfg(target_os = "macos")]
 pub use macos::{
-    CaptureHandle, Injector, accessibility_trusted, list_displays, prevent_sleep, request_accessibility,
-    request_screen_capture, screen_capture_allowed, start_capture, wake_display,
+    CaptureHandle, Injector, accessibility_trusted, keep_awake, list_displays, prevent_sleep, request_accessibility,
+    request_screen_capture, screen_capture_allowed, screen_locked, start_capture, wake_display, wake_for_unlock,
 };
 
 #[cfg(windows)]
@@ -167,8 +167,9 @@ mod windows;
 pub use self::windows::service;
 #[cfg(windows)]
 pub use self::windows::{
-    CaptureHandle, Injector, accessibility_trusted, init_process, list_displays, prevent_sleep, request_accessibility,
-    request_screen_capture, screen_capture_allowed, start_capture, wake_display,
+    CaptureHandle, Injector, accessibility_trusted, init_process, keep_awake, list_displays, prevent_sleep,
+    request_accessibility, request_screen_capture, screen_capture_allowed, screen_locked, start_capture, wake_display,
+    wake_for_unlock,
 };
 
 #[cfg(not(any(target_os = "macos", windows)))]

@@ -8,6 +8,7 @@ use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 pub const ID_DISCONNECT: &str = "disconnect";
 pub const ID_CAD: &str = "cad";
+pub const ID_WAKE: &str = "wake";
 pub const ID_SWAP: &str = "swap";
 pub const ID_CLIPBOARD: &str = "clipboard";
 pub const ID_CAPS_HANGUL: &str = "caps_hangul";
@@ -94,6 +95,7 @@ impl ViewerMenu {
             &[
                 &status,
                 &PredefinedMenuItem::separator(),
+                &MenuItem::with_id(ID_WAKE, t!("잠금 화면 깨우기", "Wake the lock screen"), true, None),
                 &MenuItem::with_id(ID_CAD, t!("Ctrl+Alt+Del 보내기", "Send Ctrl+Alt+Del"), true, None),
                 &PredefinedMenuItem::separator(),
                 &quality_menu,

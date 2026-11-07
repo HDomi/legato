@@ -55,6 +55,8 @@ pub enum ClientMsg {
     RequestKeyframe { display_id: u32 },
     /// 뷰어 쪽 클립보드 텍스트가 바뀜 (`UNI_CLIPBOARD` 스트림으로 보낸다).
     Clipboard { text: String },
+    /// 호스트 화면을 깨워 잠금 화면 비밀번호 입력 칸을 띄워 달라는 요청.
+    WakeScreen,
     /// 이 디스플레이 영상의 `seq` 까지 처리했음 (누적). 호스트는 이걸로 쌓인 지연을 재고
     /// 너무 쌓이면 새 프레임 인코딩을 건너뛰어 화면이 밀리지 않게 한다. `stream` 은 파이프라인 세대.
     FrameAck { display_id: u32, stream: u32, seq: u64 },
@@ -86,6 +88,8 @@ pub enum ServerMsg {
     QualityChanged { display_id: u32, quality: Quality },
     /// 호스트 쪽 클립보드 텍스트가 바뀜.
     Clipboard { text: String },
+    /// 호스트 화면 잠금 상태가 바뀜 (접속 직후 한 번, 이후 바뀔 때마다).
+    LockState { locked: bool },
     /// 사용자에게 보여줄 안내 (예: 호스트에 입력 권한이 없음). 연결은 유지된다.
     Notice { message: String },
     /// 복구 불가능한 오류. 이 메시지 뒤 연결은 닫힌다.

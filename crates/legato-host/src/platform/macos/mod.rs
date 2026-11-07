@@ -62,3 +62,59 @@ pub fn wake_display() {
 pub fn prevent_sleep() -> Option<std::process::Child> {
     std::process::Command::new("/usr/bin/caffeinate").args(["-i", "-w", &std::process::id().to_string()]).spawn().ok()
 }
+
+/// 화면이 잠겨 있는지 (로그인 세션의 잠금 화면). 알 수 없으면 None.
+pub fn screen_locked() -> Option<bool> {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+    use core_foundation::string::CFString;
+    unsafe extern "C" {
+        fn CGSessionCopyCurrentDictionary() -> CFDictionaryRef;
+    }
+    let raw = unsafe { CGSessionCopyCurrentDictionary() };
+    if raw.is_null() {
+        return None;
+    }
+    let dict: CFDictionary<CFString, core_foundation::base::CFType> =
+        unsafe { CFDictionary::wrap_under_create_rule(raw) };
+    let locked = dict
+        .find(CFString::from_static_string("CGSSessionScreenIsLocked"))
+        .and_then(|v| v.downcast::<CFBoolean>())
+        .map(bool::from)
+        .unwrap_or(false);
+    Some(locked)
+}
+
+/// 잠금 화면을 깨워 비밀번호 입력 칸이 보이게 한다: 사용자 활동을 알리고 Shift 를 한 번 누른다.
+pub fn wake_for_unlock() {
+    wake_display();
+    use core_graphics::event::{CGEvent, CGEventTapLocation};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+        for down in [true, false] {
+            // kVK_Shift = 0x38: 글자를 입력하지 않고 화면만 깨운다.
+            if let Ok(ev) = CGEvent::new_keyboard_event(src.clone(), 0x38, down) {
+                ev.post(CGEventTapLocation::HID);
+            }
+        }
+    }
+}
+
+/// 원격 세션 동안 디스플레이가 꺼지거나 잠기지 않게 막는다. drop 하면 풀린다.
+pub struct KeepAwake(std::process::Child);
+
+impl Drop for KeepAwake {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+pub fn keep_awake() -> Option<KeepAwake> {
+    std::process::Command::new("/usr/bin/caffeinate")
+        .args(["-d", "-i", "-w", &std::process::id().to_string()])
+        .spawn()
+        .ok()
+        .map(KeepAwake)
+}

@@ -61,3 +61,58 @@ pub fn prevent_sleep() -> Option<SleepGuard> {
     }
     Some(SleepGuard)
 }
+
+/// 입력 데스크톱이 기본 데스크톱이 아니면(잠금 화면 · 로그인 화면 · UAC) 잠긴 것으로 본다.
+/// 일반 권한이면 보안 데스크톱을 열 수 없어 판단할 수 없다 (None).
+pub fn screen_locked() -> Option<bool> {
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS, GetUserObjectInformationW, OpenInputDesktop,
+        UOI_NAME,
+    };
+    unsafe {
+        // DESKTOP_READOBJECTS = 0x0001
+        let desk = OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_ACCESS_FLAGS(0x0001)).ok()?;
+        let mut buf = [0u16; 64];
+        let mut needed = 0u32;
+        let ok = GetUserObjectInformationW(
+            windows::Win32::Foundation::HANDLE(desk.0),
+            UOI_NAME,
+            Some(buf.as_mut_ptr() as *mut _),
+            (buf.len() * 2) as u32,
+            Some(&mut needed),
+        );
+        let _ = CloseDesktop(desk);
+        ok.ok()?;
+        let len = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+        let name = String::from_utf16_lossy(&buf[..len]);
+        Some(!name.eq_ignore_ascii_case("Default"))
+    }
+}
+
+/// 잠금 화면을 깨운다. 비밀번호(PIN) 입력은 원격 키보드로 한다.
+pub fn wake_for_unlock() {
+    wake_display();
+}
+
+/// 원격 세션 동안 디스플레이가 꺼지지 않게 막는다. 실행 상태 플래그는 스레드별이라 전용 스레드가 들고 있는다.
+pub struct KeepAwake(Option<std::sync::mpsc::Sender<()>>);
+
+impl Drop for KeepAwake {
+    fn drop(&mut self) {
+        self.0.take();
+    }
+}
+
+pub fn keep_awake() -> Option<KeepAwake> {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    std::thread::Builder::new()
+        .name("legato-keep-awake".into())
+        .spawn(move || unsafe {
+            SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+            // 보내는 쪽이 사라질 때까지 기다린다.
+            let _ = rx.recv();
+            SetThreadExecutionState(ES_CONTINUOUS);
+        })
+        .ok()?;
+    Some(KeepAwake(Some(tx)))
+}

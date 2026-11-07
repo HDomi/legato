@@ -43,6 +43,7 @@ export default function ConnectPanel() {
               message: t('connect.connectedTo', { host: data.host }) + (data.via_access_code ? t('connect.viaCode') : ''),
             };
           if (event === 'notice') return { ...s, message: data.message };
+          if (event === 'lock_state' && data.locked) return { ...s, message: t('connect.hostLocked') };
           if (event === 'closed')
             return {
               ...s,

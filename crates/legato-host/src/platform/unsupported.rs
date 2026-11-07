@@ -45,3 +45,12 @@ impl Injector {
         bail!("이 OS 의 입력 주입은 아직 구현되지 않음")
     }
 }
+
+pub fn screen_locked() -> Option<bool> {
+    None
+}
+pub fn wake_for_unlock() {}
+pub struct KeepAwake;
+pub fn keep_awake() -> Option<KeepAwake> {
+    None
+}

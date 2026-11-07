@@ -17,6 +17,7 @@ export default function HostPanel() {
   const [code2, setCode2] = useState('');
   const [service, setService] = useState<{ installed: boolean; running: boolean; supported?: boolean } | null>(null);
   const [serviceBusy, setServiceBusy] = useState(false);
+  const [locked, setLocked] = useState(false);
   const [loginAgent, setLoginAgent] = useState<{ installed: boolean; supported: boolean } | null>(null);
 
   const refresh = useCallback(async () => {
@@ -51,9 +52,11 @@ export default function HostPanel() {
       }
       const { event, data } = l.value;
       if (event === 'listening') setRunning(true);
+      if (event === 'lock_state') setLocked(!!data.locked);
       if (event === 'display_password') setDisplayPassword(data.password);
       if (event === 'session_started')
         setSessions((s) => [...s, `${data.client} (${data.peer})${data.via_access_code ? t('host.viaCode') : ''}`]);
+      if (event === 'session_ended') setLocked(false);
       if (event === 'session_ended') setSessions((s) => s.filter((x) => !x.includes(`(${data.peer})`)));
     });
     return () => {
@@ -188,7 +191,10 @@ export default function HostPanel() {
           <div className="label">{t('host.fingerprint')}</div>
           <div className="mono small-text">{info.short_fingerprint}</div>
           <div className="label">{t('host.connected')}</div>
-          <div>{sessions.length ? sessions.join(', ') : t('host.none')}</div>
+          <div>
+            {sessions.length ? sessions.join(', ') : t('host.none')}
+            {locked && sessions.length > 0 && <span className="tag">🔒 {t('host.locked')}</span>}
+          </div>
         </div>
       )}
 

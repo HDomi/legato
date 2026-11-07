@@ -323,6 +323,18 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
         })
     };
 
+    // 원격 세션 동안 화면이 꺼지거나 잠기지 않게 막는다.
+    let _keep_awake = platform::keep_awake();
+    // 잠금 상태: 접속 직후 한 번 알리고, 이후 바뀔 때마다 알린다. 잠겨 있으면 화면을 깨워 비밀번호 칸을 띄운다.
+    let mut last_locked = platform::screen_locked();
+    if let Some(locked) = last_locked {
+        let _ = out_tx.send(ServerMsg::LockState { locked });
+        emit("lock_state", serde_json::json!({ "locked": locked }));
+        if locked {
+            platform::wake_for_unlock();
+        }
+    }
+
     // 3. 세션 루프
     let mut pipelines: HashMap<u32, Pipeline> = HashMap::new();
     let mut injector = platform::Injector::new();
@@ -379,6 +391,7 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
                                 c.set(text);
                             }
                         }
+                        ClientMsg::WakeScreen => platform::wake_for_unlock(),
                         ClientMsg::FrameAck { display_id, stream, seq } => {
                             if let Some(p) = pipelines.get(&display_id)
                                 && p.stream == stream
@@ -390,6 +403,15 @@ async fn handle_connection(conn: quinn::Connection, peer: SocketAddr, state: Arc
                     }
                 }
                 _ = ticker.tick() => {
+                    // 잠금 상태가 바뀌었으면 알린다.
+                    let locked = platform::screen_locked();
+                    if locked.is_some() && locked != last_locked {
+                        last_locked = locked;
+                        let locked = locked.unwrap_or(false);
+                        tracing::info!("화면 잠금 상태: {locked}");
+                        let _ = out_tx.send(ServerMsg::LockState { locked });
+                        emit("lock_state", serde_json::json!({ "locked": locked }));
+                    }
                     // 지연 예산 계산에 쓰는 왕복 시간을 갱신한다.
                     let rtt = conn.rtt().as_millis().min(u32::MAX as u128) as u32;
                     for p in pipelines.values() {

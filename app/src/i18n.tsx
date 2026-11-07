@@ -31,6 +31,7 @@ const ko = {
   'connect.ended': '연결이 끝났습니다',
   'connect.notSaved': '저장하지 않았습니다: {reason}',
   'connect.trustNew': '새 지문 믿고 다시 접속',
+  'connect.hostLocked': '호스트 화면이 잠겨 있습니다. 원격 창에서 비밀번호를 입력해 잠금을 해제해 주세요.',
 
   // 이 컴퓨터 열기
   'host.waiting': '접속 대기 중',
@@ -167,6 +168,7 @@ const en: Record<Key, string> = {
   'connect.ended': 'Connection ended',
   'connect.notSaved': 'Not saved: {reason}',
   'connect.trustNew': 'Trust the new fingerprint and reconnect',
+  'connect.hostLocked': 'The host screen is locked. Type the password in the remote window to unlock it.',
 
   'host.waiting': 'Waiting for connections',
   'host.off': 'Off',
