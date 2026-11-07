@@ -52,6 +52,61 @@ impl I420Frame {
         }
     }
 
+    /// BGRA(32비트) 화면을 이 프레임 크기로 줄이면서 I420(BT.709 제한 범위)으로 옮긴다.
+    /// 줄일 때는 원본 영역 평균(박스 필터)을 써서 글자가 깨지지 않게 한다. Windows 캡처용.
+    pub fn fill_from_bgra_scaled(&mut self, src: &[u8], src_w: usize, src_h: usize, stride: usize) {
+        let (w, h) = (self.width, self.height);
+        // 출력 픽셀 하나가 덮는 원본 범위 (고정소수 16비트).
+        let sx = ((src_w as u64) << 16) / w as u64;
+        let sy = ((src_h as u64) << 16) / h as u64;
+        let mut rgb_row = vec![[0i32; 3]; w];
+        let mut prev_row = vec![[0i32; 3]; w];
+        for oy in 0..h {
+            let y0 = ((oy as u64 * sy) >> 16) as usize;
+            let y1 = ((((oy + 1) as u64 * sy) >> 16) as usize).clamp(y0 + 1, src_h);
+            for (ox, out) in rgb_row.iter_mut().enumerate() {
+                let x0 = ((ox as u64 * sx) >> 16) as usize;
+                let x1 = ((((ox + 1) as u64 * sx) >> 16) as usize).clamp(x0 + 1, src_w);
+                let (mut r, mut g, mut b, mut n) = (0i32, 0i32, 0i32, 0i32);
+                for yy in y0..y1 {
+                    let row = &src[yy * stride..];
+                    for xx in x0..x1 {
+                        let p = &row[xx * 4..xx * 4 + 4];
+                        b += p[0] as i32;
+                        g += p[1] as i32;
+                        r += p[2] as i32;
+                        n += 1;
+                    }
+                }
+                *out = [r / n, g / n, b / n];
+            }
+            // Y: BT.709 제한 범위 (정수 근사, 계수 ×256).
+            for (ox, &[r, g, b]) in rgb_row.iter().enumerate() {
+                let yv = ((47 * r + 157 * g + 16 * b + 128) >> 8) + 16;
+                self.y[oy * w + ox] = yv.clamp(16, 235) as u8;
+            }
+            // U, V: 홀수 줄에서 위아래 두 줄 · 좌우 두 칸 평균으로.
+            if oy % 2 == 1 {
+                let cw = w / 2;
+                for cx in 0..cw {
+                    let mut acc = [0i32; 3];
+                    for p in [prev_row[cx * 2], prev_row[cx * 2 + 1], rgb_row[cx * 2], rgb_row[cx * 2 + 1]] {
+                        acc[0] += p[0];
+                        acc[1] += p[1];
+                        acc[2] += p[2];
+                    }
+                    let (r, g, b) = (acc[0] / 4, acc[1] / 4, acc[2] / 4);
+                    let u = ((-26 * r - 87 * g + 112 * b + 128) >> 8) + 128;
+                    let v = ((112 * r - 102 * g - 10 * b + 128) >> 8) + 128;
+                    let ci = (oy / 2) * cw + cx;
+                    self.u[ci] = u.clamp(16, 240) as u8;
+                    self.v[ci] = v.clamp(16, 240) as u8;
+                }
+            }
+            std::mem::swap(&mut prev_row, &mut rgb_row);
+        }
+    }
+
     /// BT.709 제한 범위로 RGB 로 바꾼다. 디버그 덤프·테스트용이라 느려도 된다.
     pub fn to_rgb(&self) -> Vec<u8> {
         let mut out = vec![0u8; self.width * self.height * 3];
@@ -194,6 +249,34 @@ mod tests {
             }
         }
         assert!(decoded >= 9, "디코딩된 프레임 수 {decoded}");
+    }
+
+    #[test]
+    fn bgra_축소_변환() {
+        // 8x4 BGRA: 왼쪽 절반 빨강, 오른쪽 절반 파랑 → 4x2 로 줄여도 색 블록(2x2)이 반쪽 안에 있어 섞이지 않는다.
+        let (sw, sh) = (8usize, 4usize);
+        let mut src = vec![0u8; sw * sh * 4];
+        for y in 0..sh {
+            for x in 0..sw {
+                let p = &mut src[(y * sw + x) * 4..(y * sw + x) * 4 + 4];
+                if x < 4 {
+                    p.copy_from_slice(&[0, 0, 255, 255]);
+                } else {
+                    p.copy_from_slice(&[255, 0, 0, 255]);
+                }
+            }
+        }
+        let mut f = I420Frame::new(4, 2);
+        f.fill_from_bgra_scaled(&src, sw, sh, sw * 4);
+        let rgb = f.to_rgb();
+        let (l, r) = (&rgb[0..3], &rgb[9..12]);
+        assert!(l[0] > 200 && l[2] < 60, "왼쪽은 빨강: {l:?}");
+        assert!(r[2] > 200 && r[0] < 60, "오른쪽은 파랑: {r:?}");
+        // 흰색은 Y 235 근처.
+        let white = vec![255u8; 8 * 8 * 4];
+        let mut f = I420Frame::new(4, 4);
+        f.fill_from_bgra_scaled(&white, 8, 8, 32);
+        assert!(f.y.iter().all(|&v| v >= 233), "{:?}", f.y);
     }
 
     #[test]

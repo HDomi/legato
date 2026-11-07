@@ -18,7 +18,7 @@ use legato_core::protocol::{
 use tokio::sync::mpsc;
 
 use crate::events::emit;
-use crate::platform::{self, CaptureOptions, FrameSink};
+use crate::platform::{self, CaptureOptions, FrameSink, RawFrame};
 
 /// 서버 전체가 공유하는 상태.
 pub struct ServerState {
@@ -493,10 +493,18 @@ impl Pipeline {
             let failed = failed.clone();
             std::thread::Builder::new().name(format!("legato-encoder-{display_id}")).spawn(move || {
                 let mut seq = 0u64;
+                // 마지막 프레임. 화면이 멈춰 새 프레임이 안 와도 키프레임 요청에 답할 수 있게 들고 있는다.
+                let mut last: Option<RawFrame> = None;
                 while !stop.load(Ordering::SeqCst) {
                     let raw = match raw_rx.recv_timeout(Duration::from_millis(200)) {
                         Ok(r) => r,
-                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Timeout) => {
+                            if keyframe.load(Ordering::SeqCst) && let Some(prev) = last.take() {
+                                prev
+                            } else {
+                                continue;
+                            }
+                        }
                         Err(RecvTimeoutError::Disconnected) => break,
                     };
                     if keyframe.swap(false, Ordering::SeqCst) {
@@ -514,7 +522,7 @@ impl Pipeline {
                                 data: e.data,
                             };
                             seq += 1;
-                            drop(raw); // 캡처 버퍼를 빨리 돌려준다.
+                            last = Some(raw);
                             // 네트워크가 밀리면 여기서 기다린다. 그동안 새 캡처 프레임은 버려진다.
                             let t = Instant::now();
                             if pkt_tx.blocking_send(pkt).is_err() {
@@ -524,7 +532,7 @@ impl Pipeline {
                             stats.sent.fetch_add(1, Ordering::Relaxed);
                             stats.max_wait_ms.fetch_max(waited, Ordering::Relaxed);
                         }
-                        Ok(None) => {}
+                        Ok(None) => last = Some(raw),
                         Err(e) => {
                             tracing::error!("인코딩 실패: {e:#}");
                             failed.store(true, Ordering::SeqCst);

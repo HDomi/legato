@@ -88,6 +88,7 @@ fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,quinn=warn".into()),
         )
         .init();
+    platform::init_process();
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Serve { port, bind, max_width, fps, bitrate, allow_sleep } => {
