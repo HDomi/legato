@@ -15,7 +15,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-latest]
+        # macOS 는 Xcode 26 이상 필요 (apple-metal 이 macOS 26 SDK API 사용).
+        os: [macos-26, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -31,7 +32,7 @@ jobs:
         run: cargo clippy --locked -- -D warnings
 
   app:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4

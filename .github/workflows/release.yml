@@ -18,7 +18,8 @@ concurrency:
 
 jobs:
   mac:
-    runs-on: macos-15
+    # apple-metal(ScreenCaptureKit 바인딩)이 macOS 26 SDK API 를 써서 Xcode 26 이상 러너가 필요하다.
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -30,6 +31,8 @@ jobs:
           [ "$want" = "$GITHUB_REF_NAME" ] || { echo "::error::태그 $GITHUB_REF_NAME 인데 tauri.conf.json 은 $want"; exit 1; }
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
@@ -37,30 +40,12 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
-      - name: Test
-        run: cargo test --locked
-
-      - name: Build
-        working-directory: app
-        run: |
-          npm ci --no-audit --no-fund
-          npx tauri build --bundles app
-
-      - name: Sign
+      # 로컬과 같은 스크립트로 테스트 · 빌드 · 서명 · DMG · zip 을 만든다.
+      - name: Build, sign, package
         env:
           MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-        run: scripts/sign-macos.sh target/release/bundle/macos/Legato.app
-
-      - name: Package DMG and zip
-        run: |
-          v="$(node -p 'require("./app/src-tauri/tauri.conf.json").version')"
-          mkdir -p out dmgroot
-          cp -R target/release/bundle/macos/Legato.app dmgroot/
-          ln -s /Applications dmgroot/Applications
-          hdiutil create -volname "Legato" -srcfolder dmgroot -ov -format UDZO "out/Legato-$v-arm64.dmg"
-          # 앱 안 업데이터용 zip (서명·확장 속성을 보존하려고 ditto 사용).
-          ditto -c -k --keepParent target/release/bundle/macos/Legato.app "out/Legato-$v-arm64-mac.zip"
+        run: scripts/build-mac-release.sh
 
       - uses: actions/upload-artifact@v4
         with:

@@ -7,3 +7,5 @@ node_modules/
 *.cer
 .DS_Store
 /app/src-tauri/gen/
+/out/
+/dmgroot/
