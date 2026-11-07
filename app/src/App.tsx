@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import HostPanel from './HostPanel';
 import ConnectPanel from './ConnectPanel';
+import UpdateBadge from './UpdateBadge';
 
 type Tab = 'connect' | 'host';
 
@@ -12,6 +13,7 @@ export default function App() {
         <div className="brand">
           <img className="logo" src="/icon.png" alt="" />
           <span>Legato</span>
+          <UpdateBadge />
         </div>
         <nav className="tabs">
           <button className={tab === 'connect' ? 'active' : ''} onClick={() => setTab('connect')}>

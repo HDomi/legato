@@ -16,6 +16,16 @@ export interface HostInfo {
   config_dir: string;
 }
 
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  available: boolean;
+  notes: string;
+  url: string;
+  has_asset: boolean;
+  permissions_reset: boolean;
+}
+
 export interface AppSettings {
   auto_host: boolean;
   launch_at_login: boolean;
@@ -55,6 +65,8 @@ export const api = {
     acceptNewFingerprint: boolean;
   }) => invoke<void>('connect', opts),
   forgetCode: (address: string) => invoke<void>('forget_code', { address }),
+  checkUpdate: () => invoke<UpdateInfo>('check_update'),
+  installUpdate: (version: string, force: boolean) => invoke<void>('install_update', { version, force }),
   getSettings: () => invoke<AppSettings>('get_settings'),
   setSettings: (s: Partial<{ autoHost: boolean; launchAtLogin: boolean }>) => invoke<void>('set_settings', s),
   onCodeSaved: (cb: (p: { tag: string; address: string; error: string | null }) => void): Promise<UnlistenFn> =>

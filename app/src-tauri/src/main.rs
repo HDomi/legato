@@ -9,6 +9,14 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+mod update;
+
+/// 이 컴퓨터(호스트)에 접속해 있는 원격 세션 수. 업데이트 보류 판단용.
+static HOST_SESSIONS: AtomicUsize = AtomicUsize::new(0);
+/// 실행 중인 뷰어(다른 컴퓨터에 접속 중) 수.
+static VIEWERS: AtomicUsize = AtomicUsize::new(0);
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -103,6 +111,26 @@ fn pipe_lines(
         for line in BufReader::new(reader).lines().map_while(Result::ok) {
             let payload = match serde_json::from_str::<serde_json::Value>(&line) {
                 Ok(v) if v.get("event").is_some() => {
+                    if event == "host" {
+                        match v["event"].as_str() {
+                            Some("session_started") => {
+                                HOST_SESSIONS.fetch_add(1, Ordering::SeqCst);
+                            }
+                            Some("session_ended") => {
+                                let mut cur = HOST_SESSIONS.load(Ordering::SeqCst);
+                                // 0 아래로 내려가지 않게 비교-교환으로 줄인다.
+                                while let Err(actual) = HOST_SESSIONS.compare_exchange(
+                                    cur,
+                                    cur.saturating_sub(1),
+                                    Ordering::SeqCst,
+                                    Ordering::SeqCst,
+                                ) {
+                                    cur = actual;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                     if v["event"] == "connected"
                         && let Some(f) = on_connected.take()
                     {
@@ -114,6 +142,9 @@ fn pipe_lines(
                 _ => serde_json::json!({ "tag": tag, "kind": "log", "value": strip_ansi(&line) }),
             };
             let _ = app.emit(event, payload);
+        }
+        if event == "host" && tag == "stdout" {
+            HOST_SESSIONS.store(0, Ordering::SeqCst);
         }
         let _ = app.emit(event, serde_json::json!({ "tag": tag, "kind": "exit" }));
     });
@@ -277,8 +308,40 @@ fn connect(
     pipe_lines(app.clone(), child.stdout.take().expect("piped"), "viewer", id.clone(), on_connected);
     pipe_lines(app, child.stderr.take().expect("piped"), "viewer", id, None);
     // 종료 코드를 거둬 좀비 프로세스가 남지 않게 한다.
+    VIEWERS.fetch_add(1, Ordering::SeqCst);
     std::thread::spawn(move || {
         let _ = child.wait();
+        VIEWERS.fetch_sub(1, Ordering::SeqCst);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<update::UpdateInfo, String> {
+    let current = app.package_info().version.to_string();
+    tauri::async_runtime::spawn_blocking(move || update::check(&current)).await.map_err(|e| e.to_string())?
+}
+
+/// 업데이트를 받아 설치한다. 원격 세션이 있으면 `force` 없이는 미룬다 (접속 중에 끊기지 않게).
+#[tauri::command]
+async fn install_update(app: AppHandle, version: String, force: bool) -> Result<(), String> {
+    let (hosted, viewing) = (HOST_SESSIONS.load(Ordering::SeqCst), VIEWERS.load(Ordering::SeqCst));
+    if !force && (hosted > 0 || viewing > 0) {
+        return Err(format!("BUSY: 원격 세션이 열려 있어 (이 컴퓨터에 접속 {hosted}, 내가 접속 중 {viewing})"));
+    }
+    let resume_host = host_running(app.state::<HostProc>());
+    tauri::async_runtime::spawn_blocking(move || update::install(&version, resume_host))
+        .await
+        .map_err(|e| e.to_string())??;
+    // 설치 스크립트가 앱 종료를 기다린다. 호스트를 먼저 끄고 앱을 끝낸다.
+    if let Some(mut c) = app.state::<HostProc>().0.lock().expect("뮤텍스").take() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+    let h = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        h.exit(0);
     });
     Ok(())
 }
@@ -364,7 +427,9 @@ fn main() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
         .manage(HostProc::default())
         .setup(|app| {
-            if load_settings().auto_host {
+            // 업데이트 직후 다시 열렸으면 그 전에 켜져 있던 호스트를 다시 켠다.
+            let resume = std::env::args().any(|a| a == "--resume-host");
+            if load_settings().auto_host || resume {
                 let handle = app.handle().clone();
                 if let Err(e) = host_start(handle.clone(), handle.state::<HostProc>()) {
                     eprintln!("호스트 자동 시작 실패: {e}");
@@ -391,6 +456,8 @@ fn main() {
             forget_code,
             get_settings,
             set_settings,
+            check_update,
+            install_update,
             load_addresses,
             save_addresses
         ])

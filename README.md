@@ -103,7 +103,7 @@ Legato 는 원격받는 쪽이 UDP 포트 하나만 열어두면 IP 로 바로 �
 3. Apple 공증을 받지 않은 앱이라 처음 한 번은 macOS 가 막는다. 시스템 설정 › 개인정보 보호 및 보안 › "그래도 열기", 또는:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Legato.app"
+find "/Applications/Legato.app" -exec xattr -d com.apple.quarantine {} + 2>/dev/null
 ```
 
 4. 호스트로 쓸 Mac 은 **이 컴퓨터 열기** 탭의 **권한 요청** 으로 **화면 기록**과 **손쉬운 사용**을 허용한다. Apple 정책상 원격으로는 허용할 수 없어서 처음 한 번은 그 Mac 앞에서 직접 해야 한다.
@@ -255,7 +255,7 @@ legato-viewer 192.168.0.10 --headless --frames 120 --dump frame.png   # 창 없�
 
 | 증상 | 원인 · 해결 |
 |------|------------|
-| "손상되었기 때문에 열 수 없습니다" / "확인되지 않은 개발자" | 공증하지 않은 앱이라 그렇다. `xattr -dr com.apple.quarantine "/Applications/Legato.app"` 후 다시 연다 |
+| "손상되었기 때문에 열 수 없습니다" / "확인되지 않은 개발자" | 공증하지 않은 앱이라 그렇다. `find "/Applications/Legato.app" -exec xattr -d com.apple.quarantine {} + 2>/dev/null` 후 다시 연다 |
 | "응답 없음 (포트·방화벽 확인)" | 호스트가 꺼져 있거나 UDP 포트가 막힘. 호스트 화면이 "접속 대기 중" 인지, 같은 네트워크인지, 외부라면 포트포워딩 · VPN 을 확인 |
 | "호스트 화면을 가져올 수 없어" · "화면 캡처를 시작할 수 없어" | 호스트 Mac 에 화면 기록 권한이 없음. 그 Mac 에서 **권한 요청** 후 Legato 를 다시 켠다 |
 | "응답 없음. 호스트 Mac 에 화면 기록 권한 확인 창이…" | macOS 가 권한 확인 창을 띄우고 기다리는 중. 호스트 Mac 에서 허용 |
