@@ -267,7 +267,7 @@ legato-viewer 192.168.0.10 --headless --frames 120 --dump frame.png   # 창 없�
 | `addressbook.json` | 주소록 (비밀 값 없음) | 〃 |
 | `app.json` | 앱 설정 (자동 접속 대기) | 〃 |
 | 저장한 접속 코드 | 키체인, 서비스 `com.hdomi.legato`, 계정 = 주소 | 자격 증명 관리자 |
-| 로그인 시 실행 | `~/Library/LaunchAgents/Legato.plist` | 레지스트리 `Run` |
+| 로그인 시 실행 | `~/Library/LaunchAgents/` 의 Legato 항목 | 레지스트리 `Run` |
 | 로그인 화면 에이전트 | `/Library/LaunchAgents/com.hdomi.legato.loginwindow.plist`, 로그 `/Library/Logs/Legato/loginwindow.log` | — |
 | 서비스 모드 | — | 서비스 `LegatoHost`, 로그 `설정 폴더\service.log` · `host-helper.log`, 방화벽 규칙 "Legato 호스트 (UDP)" |
 | 업데이트 임시 파일 | `~/Library/Caches/com.hdomi.legato/update/` | `%TEMP%\Legato-update\` |
