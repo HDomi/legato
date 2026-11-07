@@ -13,6 +13,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::keys::to_w3c;
@@ -379,6 +380,20 @@ impl ApplicationHandler<UserEvent> for App {
         if let WindowEvent::KeyboardInput { .. } = &event
             && let Some(display_id) = self.wins.get(&id).map(|w| w.display_id)
         {
+            // 한/영 키: 키보드마다 물리 신호가 달라서(전용 키는 winit 이 모르는 스캔코드, 오른쪽 Alt 자리 키는 AltRight)
+            // Windows 가 붙여 주는 논리 키(HangulMode, IME 가 가로채면 Process)도 함께 본다.
+            // 누를 때 한 번만 Lang1 을 눌렀다 뗀다 (떼는 신호가 안 오는 키보드도 있어서).
+            if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
+                let physical = to_w3c(ke.physical_key);
+                if is_hangul_key(physical.as_deref(), &ke.logical_key) {
+                    if ke.state == ElementState::Pressed && !ke.repeat {
+                        for d in [true, false] {
+                            self.send_input(display_id, InputEvent::Key { code: "Lang1".into(), down: d });
+                        }
+                    }
+                    return;
+                }
+            }
             if let WindowEvent::KeyboardInput { event: ke, .. } = &event
                 && let Some(code) = to_w3c(ke.physical_key)
             {
@@ -461,5 +476,30 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(ev) = input {
             self.send_input(display_id, ev);
         }
+    }
+}
+
+/// 한/영 키인지. 물리 키가 Lang1 이거나, 논리 키가 HangulMode 이거나,
+/// IME 가 가로챈(Process) 오른쪽 Alt 자리 한/영 키인 경우.
+fn is_hangul_key(physical: Option<&str>, logical: &Key) -> bool {
+    physical == Some("Lang1")
+        || matches!(logical, Key::Named(NamedKey::HangulMode))
+        || (physical == Some("AltRight") && matches!(logical, Key::Named(NamedKey::Process)))
+}
+
+#[cfg(test)]
+mod hangul_tests {
+    use super::is_hangul_key;
+    use winit::keyboard::{Key, NamedKey};
+
+    #[test]
+    fn 한영_키_판별() {
+        let alt = Key::Named(NamedKey::Alt);
+        assert!(is_hangul_key(Some("Lang1"), &alt));
+        assert!(is_hangul_key(None, &Key::Named(NamedKey::HangulMode)));
+        assert!(is_hangul_key(Some("AltRight"), &Key::Named(NamedKey::HangulMode)));
+        assert!(is_hangul_key(Some("AltRight"), &Key::Named(NamedKey::Process)));
+        assert!(!is_hangul_key(Some("AltRight"), &alt));
+        assert!(!is_hangul_key(Some("KeyA"), &Key::Named(NamedKey::Process)));
     }
 }
