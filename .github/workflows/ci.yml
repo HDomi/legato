@@ -26,10 +26,27 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       # 기본 멤버(core, host, viewer)만. Tauri 앱은 아래 app 작업에서 빌드한다.
+      # 출력은 파일로도 남겨 실패하면 오류 줄을 실행 요약(로그인 없이 보이는 페이지)에 적는다.
       - name: Test
-        run: cargo test --locked
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked 2>&1 | tee ci-test.log
       - name: Clippy
-        run: cargo clippy --locked -- -D warnings
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --locked -- -D warnings 2>&1 | tee ci-clippy.log
+      - name: Failure summary
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.os }} 실패 (오류 부분)"
+            echo '```'
+            grep -hE -A14 '^(error|warning)(\[|:)|panicked|FAILED' ci-test.log ci-clippy.log 2>/dev/null | head -400
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   app:
     runs-on: macos-26
@@ -48,4 +65,17 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Build app bundle
         working-directory: app
-        run: npx tauri build --bundles app
+        shell: bash
+        run: |
+          set -o pipefail
+          npx tauri build --bundles app 2>&1 | tee ../ci-app.log
+      - name: Failure summary
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "### app 실패 (오류 부분)"
+            echo '```'
+            grep -hE -A14 '^(error|warning)(\[|:)|panicked|Error' ci-app.log 2>/dev/null | head -400
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -72,6 +72,10 @@ enum Cmd {
         /// 호스팅 중에도 시스템 잠자기를 허용한다 (기본은 막음).
         #[arg(long)]
         allow_sleep: bool,
+        /// 설정 파일을 바꾸지 않는다 (macOS 로그인 화면 에이전트용: root 로 돌아도 사용자 파일 소유권을 지키게).
+        /// 표시 비밀번호는 메모리에서만 만든다.
+        #[arg(long)]
+        readonly_config: bool,
     },
     /// 표시 비밀번호를 바꾼다. `--generate` 가 없으면 표준 입력 첫 줄을 쓴다.
     SetPassword {
@@ -105,6 +109,11 @@ enum Cmd {
         #[command(subcommand)]
         action: ServiceCmd,
     },
+    /// macOS 로그인 화면 에이전트 관리 (로그아웃 상태에서도 접속).
+    LoginAgent {
+        #[command(subcommand)]
+        action: ServiceCmd,
+    },
 }
 
 fn main() -> Result<()> {
@@ -128,8 +137,8 @@ fn main() -> Result<()> {
         None => tracing_subscriber::fmt().with_writer(std::io::stderr).with_env_filter(filter).init(),
     }
     match cli.cmd {
-        Cmd::Serve { port, bind, max_width, fps, bitrate, allow_sleep } => {
-            serve(port, &bind, max_width, fps, bitrate, allow_sleep)
+        Cmd::Serve { port, bind, max_width, fps, bitrate, allow_sleep, readonly_config } => {
+            serve(port, &bind, max_width, fps, bitrate, allow_sleep, readonly_config)
         }
         Cmd::SetPassword { generate, json } => set_password(generate, json),
         Cmd::SetAccessCode => set_access_code(),
@@ -163,6 +172,34 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Service { action } => service_cmd(action),
+        Cmd::LoginAgent { action } => login_agent_cmd(action),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn login_agent_cmd(action: ServiceCmd) -> Result<()> {
+    use platform::login_agent;
+    match action {
+        ServiceCmd::Install => login_agent::install(&legato_core::paths::config_dir()?)?,
+        ServiceCmd::Uninstall => login_agent::uninstall()?,
+        ServiceCmd::Status { .. } => {
+            println!("{}", serde_json::json!({ "installed": login_agent::status(), "supported": true }));
+            return Ok(());
+        }
+        ServiceCmd::Run => bail!("로그인 화면 에이전트는 launchd 가 serve 로 실행해"),
+    }
+    println!("{}", serde_json::json!({ "ok": true }));
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn login_agent_cmd(action: ServiceCmd) -> Result<()> {
+    match action {
+        ServiceCmd::Status { .. } => {
+            println!("{}", serde_json::json!({ "installed": false, "supported": false }));
+            Ok(())
+        }
+        _ => bail!("로그인 화면 에이전트는 macOS 전용이야 (Windows 는 서비스 모드)"),
     }
 }
 
@@ -280,16 +317,27 @@ fn info(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn serve(port: Option<u16>, bind: &str, max_width: u32, fps: u32, bitrate: u32, allow_sleep: bool) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn serve(
+    port: Option<u16>,
+    bind: &str,
+    max_width: u32,
+    fps: u32,
+    bitrate: u32,
+    allow_sleep: bool,
+    readonly: bool,
+) -> Result<()> {
     let mut cfg = HostConfig::load()?;
     if !cfg.allow_display_password && cfg.access_code.is_none() {
         // 설정 파일을 직접 고친 경우. 아무도 못 들어오는 상태로는 열지 않는다.
         bail!("표시 비밀번호가 꺼져 있고 고정 접속 코드도 없어서 접속할 방법이 없어");
     }
-    // 표시 비밀번호: 없거나 매번 새로 만드는 설정이면 새로 만든다.
+    // 표시 비밀번호: 없거나 매번 새로 만드는 설정이면 새로 만든다. 읽기 전용이면 저장하지 않는다.
     if cfg.allow_display_password && (cfg.display_password.is_none() || cfg.rotate_display_password) {
         cfg.display_password = Some(generate_password());
-        cfg.save()?;
+        if !readonly {
+            cfg.save()?;
+        }
     }
     let display = if cfg.allow_display_password {
         let pw = cfg.display_password.clone().expect("위에서 채움");
@@ -300,7 +348,16 @@ fn serve(port: Option<u16>, bind: &str, max_width: u32, fps: u32, bitrate: u32, 
         None
     };
     let port = port.unwrap_or(cfg.port);
-    let id = load_identity()?;
+    let id = if readonly {
+        // 읽기 전용: 신원 파일이 없으면 만들지 않고 멈춘다 (root 소유 파일이 생기지 않게).
+        let path = legato_core::paths::config_dir()?.join("identity.json");
+        if !path.exists() {
+            bail!("신원 파일이 없어 ({}). 먼저 앱에서 호스트를 한 번 켜줘", path.display());
+        }
+        load_identity()?
+    } else {
+        load_identity()?
+    };
     let fp = id.fingerprint();
     if !platform::screen_capture_allowed() {
         tracing::warn!("화면 기록 권한이 없어. 접속하면 캡처가 실패할 거야 (legato-host request-permissions)");

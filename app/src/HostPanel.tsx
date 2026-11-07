@@ -16,6 +16,7 @@ export default function HostPanel() {
   const [code2, setCode2] = useState('');
   const [service, setService] = useState<{ installed: boolean; running: boolean; supported?: boolean } | null>(null);
   const [serviceBusy, setServiceBusy] = useState(false);
+  const [loginAgent, setLoginAgent] = useState<{ installed: boolean; supported: boolean } | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -25,6 +26,7 @@ export default function HostPanel() {
       setRunning(await api.hostRunning());
       setSettings(await api.getSettings());
       setService(await api.serviceStatus().catch(() => null));
+      setLoginAgent(await api.loginAgentStatus().catch(() => null));
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -120,6 +122,20 @@ export default function HostPanel() {
   const needsPermission = info && (!info.screen_capture || !info.accessibility);
   const isWindows = navigator.userAgent.includes('Windows');
   const serviceRunning = !!service?.running;
+
+  const changeLoginAgent = async (install: boolean) => {
+    setServiceBusy(true);
+    setError(null);
+    try {
+      await api.loginAgentChange(install);
+      setNotice(install ? '로그인 화면 접속을 켰어. 로그아웃한 상태에서도 고정 접속 코드로 들어올 수 있어.' : '로그인 화면 접속을 껐어.');
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setServiceBusy(false);
+      refresh();
+    }
+  };
 
   const changeService = async (install: boolean) => {
     setServiceBusy(true);
@@ -282,6 +298,27 @@ export default function HostPanel() {
             <button className="small" disabled={serviceBusy} onClick={() => changeService(!service.installed)}>
               {serviceBusy ? '처리 중…' : service.installed ? '서비스 제거' : '서비스 설치'}
             </button>
+          </div>
+        </div>
+      )}
+
+      {loginAgent?.supported && (
+        <div className="card">
+          <h3>로그인 화면에서도 접속 (macOS)</h3>
+          <p className="muted small-text">
+            로그아웃했거나 재부팅 뒤 로그인 화면에서도 접속을 받는다 (고정 접속 코드 필요). 관리자 암호가 필요해. FileVault 를 켠
+            Mac 은 재부팅 직후 디스크 잠금 해제 화면에서는 접속할 수 없어 (macOS 가 뜨기 전 단계라서).
+          </p>
+          <div className="row">
+            <span>{loginAgent.installed ? '켜짐' : '꺼짐'}</span>
+            <button
+              className="small"
+              disabled={serviceBusy || (!loginAgent.installed && !info?.has_access_code)}
+              onClick={() => changeLoginAgent(!loginAgent.installed)}
+            >
+              {loginAgent.installed ? '끄기' : '켜기'}
+            </button>
+            {!loginAgent.installed && !info?.has_access_code && <span className="muted small-text">고정 접속 코드를 먼저 정해줘</span>}
           </div>
         </div>
       )}

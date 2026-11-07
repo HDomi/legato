@@ -64,6 +64,8 @@ pub trait VideoEncoder: Send {
 /// OpenH264 소프트웨어 인코더. 하드웨어 인코더를 못 쓸 때의 대비책.
 pub struct SoftwareEncoder {
     inner: H264Encoder,
+    /// macOS 픽셀 버퍼를 I420 으로 옮길 때 재사용하는 버퍼 (다른 OS 는 이미 I420 으로 온다).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     scratch: Option<I420Frame>,
 }
 
@@ -146,6 +148,8 @@ pub fn create_encoder(width: usize, height: usize, bitrate: u32, fps: u32) -> Re
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::login_agent;
 #[cfg(target_os = "macos")]
 pub use macos::{
     CaptureHandle, Injector, accessibility_trusted, list_displays, prevent_sleep, request_accessibility,

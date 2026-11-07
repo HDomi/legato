@@ -267,6 +267,48 @@ async fn service_change(install: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn login_agent_status() -> Result<serde_json::Value, String> {
+    run_json("legato-host", &["login-agent", "status", "--json"])
+}
+
+/// macOS 로그인 화면 에이전트 설치·제거. root 권한이 필요해서 관리자 암호 창(osascript)으로 실행한다.
+#[tauri::command]
+async fn login_agent_change(install: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let exe = helper("legato-host")?;
+        let dir = legato_core::paths::config_dir().map_err(|e| e.to_string())?;
+        // 셸 작은따옴표 → AppleScript 문자열 순서로 감싼다.
+        let sh = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+        let cmd = format!(
+            "{} --config-dir {} login-agent {}",
+            sh(&exe.to_string_lossy()),
+            sh(&dir.to_string_lossy()),
+            if install { "install" } else { "uninstall" }
+        );
+        let apple = format!(
+            "do shell script \"{}\" with administrator privileges with prompt \"Legato 가 로그인 화면 접속 설정을 바꾸려고 해.\"",
+            cmd.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+        let out = tauri::async_runtime::spawn_blocking(move || Command::new("osascript").args(["-e", &apple]).output())
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(if err.contains("-128") { "취소했어".into() } else { format!("설정 변경 실패: {err}") })
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = install;
+        Err("로그인 화면 에이전트는 macOS 전용이야".into())
+    }
+}
+
+#[tauri::command]
 fn host_request_permissions() -> Result<serde_json::Value, String> {
     run_json("legato-host", &["request-permissions"])
 }
@@ -491,6 +533,8 @@ fn main() {
             host_request_permissions,
             service_status,
             service_change,
+            login_agent_status,
+            login_agent_change,
             connect,
             forget_code,
             get_settings,

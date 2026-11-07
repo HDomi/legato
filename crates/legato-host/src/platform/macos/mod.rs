@@ -3,6 +3,7 @@
 mod capture;
 mod input;
 mod keymap;
+pub mod login_agent;
 mod vt;
 
 use anyhow::{Result, bail};
