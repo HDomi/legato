@@ -35,7 +35,7 @@
 
 ---
 
-> **현재 단계: P1.** Mac 이 호스트(원격받는 쪽), Mac · Windows 가 뷰어(접속하는 쪽)다. Windows 호스트, 멀티 모니터, UAC · 로그인 화면은 다음 단계. [로드맵](#로드맵) 참고.
+> **현재 단계: P0~P6 구현.** Mac · Windows 모두 호스트 · 뷰어. Windows 쪽 기능(호스트 · 서비스 모드)과 macOS 로그인 화면 접속은 실제 기기 검증 전이다. [로드맵](#로드맵)의 검증 상태 참고.
 
 ## 목차
 
@@ -66,9 +66,12 @@ Legato 는 원격받는 쪽이 UDP 포트 하나만 열어두면 IP 로 바로 �
 ## 하이라이트
 
 - **직접 연결**: QUIC(UDP) 하나. 계정 · 중계 서버 · 클라우드 없음.
-- **낮은 지연**: 같은 Mac 루프백 측정 1920×1248 · 약 30fps · 지연 중간값 17ms / 95% 20ms (M4 MacBook Air, `--headless` 측정).
+- **낮은 지연**: Mac 하드웨어 인코딩(VideoToolbox) 루프백 측정 1920×1248 · 30fps · 지연 중간값 14ms, 고화질 3320×2160 · 지연 중간값 28ms (M4 MacBook Air, `--headless`).
+- **화질 자동 조절**: 네트워크 · 뷰어 처리량을 보고 고화질 / 균형 / 절약을 오르내린다.
+- **멀티 모니터 · 클립보드**: 원격 모니터마다 창(Mac 은 Space), 텍스트 클립보드 양방향.
 - **두 가지 자격 증명**: 화면에 보이는 **표시 비밀번호**(켤 때마다 교체) + 나만 아는 **고정 접속 코드**(해시만 저장). 둘 중 하나만 맞으면 된다.
-- **무인 접속**: 로그인 시 실행 → 바로 접속 대기 → 대기 중 잠자기 방지. 집을 비워도 회사에서 들어간다.
+- **무인 접속**: 로그인 시 실행 → 바로 접속 대기 → 대기 중 잠자기 방지. macOS 로그인 화면 · Windows 로그인 화면 · UAC 창까지(서비스 모드).
+- **앱 안 업데이트**: 새 릴리스를 배지로 알리고, 받은 파일을 체크섬 · 서명으로 확인한 뒤 교체한다.
 - **강한 기본 보안**: TLS 1.3, 호스트 지문 고정, 비밀번호를 네트워크로 보내지 않는 상호 인증, 무차별 대입 잠금.
 - **네이티브 성능**: 캡처 · 인코딩 · 렌더는 Rust. UI 만 Tauri(React)라 앱이 가볍다(약 28MB).
 
@@ -76,16 +79,21 @@ Legato 는 원격받는 쪽이 UDP 포트 하나만 열어두면 IP 로 바로 �
 
 | 영역 | 내용 |
 |------|------|
-| **화면 전송** | ScreenCaptureKit 캡처(NV12) → H.264(OpenH264, 화면 콘텐츠 모드) → QUIC 스트림. 기본 최대 폭 1920px · 30fps · 8Mbps(`serve` 옵션으로 조절). 화면 변화가 없으면 프레임을 보내지 않고, 인코더가 밀리면 원본 프레임을 버려 지연이 쌓이지 않는다. 뷰어 디코딩이 밀리면 키프레임부터 다시 시작 |
-| **조작** | 마우스 이동 · 클릭 · 드래그 · 더블/트리플 클릭 · 가운데 · 앞/뒤 버튼, 휠과 트랙패드 스크롤(픽셀 단위), 키보드(물리 키 위치 기준이라 한글 · 영문 자판과 무관), 수정자 키. 뷰어 창이 포커스를 잃으면 눌려 있던 키를 모두 뗀다 |
-| **뷰어 창** | Mac: 네이티브 전체화면(별도 Space). `--windowed` 또는 앱의 "창으로 열기" 로 일반 창. Windows: 일반 창. 원격 비율을 유지하고 남는 곳은 검게(레터박스), HiDPI 대응 |
+| **화면 전송** | Mac: ScreenCaptureKit(NV12) → VideoToolbox 하드웨어 H.264(Constrained Baseline, 안 되면 OpenH264). Windows: DXGI Desktop Duplication → OpenH264. 화질 단계 자동 · 고화질(최대 3840×2160 · 60fps) · 균형(1920 · 30fps) · 절약(1280 · 24fps). 화면 변화가 없으면 보내지 않고, 밀리면 원본 프레임을 버려 지연이 쌓이지 않는다. 인코더가 죽으면 자동으로 다시 시작 |
+| **자동 화질** | 버린 프레임 · 전송 대기 · 뷰어 키프레임 재요청을 1초마다 보고 2초 혼잡이면 내리고 10초 여유면 올린다. 내린 뒤에는 30초~10분 동안 다시 올리지 않아 출렁이지 않는다 |
+| **조작** | 마우스 이동 · 클릭 · 드래그 · 더블/트리플 클릭 · 가운데 · 앞/뒤 버튼, 휠과 트랙패드 스크롤, 키보드(물리 키 위치 기준이라 한글 · 영문 자판과 무관). Mac ↔ Windows 사이에서는 Cmd ↔ Ctrl 자동 교환. ⌘Q 등 단축키도 원격으로 간다. Ctrl+Alt+Del 은 메뉴에서 |
+| **뷰어 창** | 원격 모니터마다 창 하나. Mac: 로컬 모니터마다 나눠서 네이티브 전체화면(Space), `--windowed` 로 일반 창. Windows: 일반 창. 레터박스 · HiDPI 대응 |
+| **뷰어 메뉴** | 연결 끊기, Ctrl+Alt+Del 보내기, 화질(자동 · 고화질 · 균형 · 절약), 디스플레이 켜고 끄기, Cmd ↔ Ctrl 바꾸기, 클립보드 공유 |
+| **클립보드** | 텍스트 양방향 동기화 (최대 1MB). 메뉴에서 끌 수 있다. 접속한 순간의 기존 내용은 보내지 않는다 |
 | **자격 증명** | 표시 비밀번호(사람이 읽기 쉬운 `xxxx-xxxx-xxxx`, 켤 때마다 새로 · 끄기 가능) + 고정 접속 코드(10자 이상, 호스트엔 PBKDF2 해시만). 표시 비밀번호를 끄면 접속 코드로만 들어온다 |
 | **키체인 저장** | 고정 접속 코드로 인증에 성공했을 때만 macOS 키체인 / Windows 자격 증명 관리자에 저장. 주소록에 "코드 저장됨" 표시와 **바로 접속** 버튼. 표시 비밀번호는 저장하지 않는다 |
 | **주소록** | 이름 · 주소 저장, 코드 지우기, 삭제. 비밀 값은 주소록 파일에 넣지 않는다 |
-| **무인 접속** | "로그인하면 Legato 실행"(LaunchAgent, 최소화로 시작), "켜지면 바로 접속 대기", 대기 중 시스템 잠자기 방지(`caffeinate -i`, 화면은 꺼져도 됨), 접속 순간 디스플레이 깨우기 |
+| **무인 접속** | "로그인하면 Legato 실행"(최소화로 시작), "켜지면 바로 접속 대기", 대기 중 시스템 잠자기 방지(화면은 꺼져도 됨), 접속 순간 디스플레이 깨우기 |
+| **로그인 화면 (macOS)** | 로그아웃 · 재부팅 뒤 로그인 화면에서도 접속을 받는 LaunchAgent (관리자 암호로 설치) |
+| **서비스 모드 (Windows)** | SYSTEM 서비스가 로그인 전부터 대기. 로그인 · 잠금 화면, UAC 확인 창 캡처와 입력, 관리자 권한 창 조작, Ctrl+Alt+Del |
 | **세션** | 한 번에 한 뷰어. 인증을 통과한 새 접속이 기존 세션을 넘겨받아 네트워크가 끊겼다 붙어도 바로 들어오고, 밀려난 쪽엔 이유를 알려준다 |
-| **호스트 화면** | 켜기/끄기, 주소(LAN IP:포트), 인증서 지문, 접속 중인 뷰어, 표시 비밀번호, 고정 접속 코드 설정 · 바꾸기 · 지우기, 권한 상태와 요청 버튼, 로그 |
-| **안내** | 권한이 없거나 캡처가 실패하면 이유를 뷰어에 그대로 보여준다. 호스트에 손쉬운 사용 권한이 없으면 접속 직후 알림 |
+| **업데이트** | 헤더 배지 → 노트 확인 → **업데이트하고 다시 열기**. Mac 은 zip 을 체크섬 · 번들 id · 버전 · 서명으로 확인 후 교체(실패하면 원래 앱 복구), Windows 는 설치 파일 실행. 원격 세션 중이면 먼저 묻고, 켜져 있던 호스트는 다시 켠다 |
+| **안내** | 권한이 없거나 캡처가 실패하면 이유를 뷰어에 그대로 보여준다. 호스트에 입력 권한이 없으면 접속 직후 알림 |
 
 ## 설치
 
@@ -94,7 +102,7 @@ Legato 는 원격받는 쪽이 UDP 포트 하나만 열어두면 IP 로 바로 �
 | | 호스트 (원격받는 쪽) | 뷰어 (접속하는 쪽) |
 |---|---|---|
 | **macOS** | 14 이상, Apple Silicon | 14 이상, Apple Silicon |
-| **Windows** | 아직 안 됨 (P2) | 10 / 11 x64 |
+| **Windows** | 10 / 11 x64 (로그인 화면 · UAC 까지 쓰려면 서비스 모드) | 10 / 11 x64 |
 
 ### macOS
 
@@ -111,6 +119,8 @@ find "/Applications/Legato.app" -exec xattr -d com.apple.quarantine {} + 2>/dev/
 ### Windows
 
 [최신 릴리스](https://github.com/HDomi/legato/releases/latest) 에서 `Legato_<버전>_x64-setup.exe` 를 받아 설치한다. 코드 서명이 없어서 SmartScreen 경고가 뜨면 "추가 정보 › 실행".
+
+호스트로 쓸 PC 는 **이 컴퓨터 열기** › **Windows 서비스 모드** › **서비스 설치** (관리자 권한 확인 창). 그러면 Windows 가 켜지는 순간부터 로그인 화면 · UAC 창까지 원격으로 다룰 수 있다. 서비스 없이 앱의 **켜기** 만 쓰면 로그인한 동안, 일반 권한 창만 조작된다.
 
 <details>
 <summary><b>받은 파일 체크섬 확인</b></summary>
@@ -140,7 +150,8 @@ shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 
 1. **접속하기** 탭에 주소와 비밀번호(또는 고정 접속 코드)를 넣고 **접속**.
 2. Mac 은 원격 화면이 새 Space 로 열린다. 트랙패드 좌우 스와이프나 Mission Control 로 오간다.
-3. 끝낼 때는 뷰어에서 `⌘Q` (원격으로 전달되지 않고 뷰어만 닫힌다). 전체화면에서 나오려면 화면 위쪽에 마우스를 올려 초록 버튼.
+3. 원격 모니터가 여러 대면 창이 여러 개 열린다 (Mac 은 로컬 모니터마다 나눠 Space).
+4. 메뉴 막대 **원격** 에서 화질 · 디스플레이 · Ctrl+Alt+Del · Cmd↔Ctrl · 클립보드를 바꾼다. 끝낼 때는 **Legato(뷰어) › 연결 끊기** (⌘Q 는 원격으로 간다). 전체화면에서 나오려면 화면 위쪽에 마우스를 올려 초록 버튼.
 
 처음 접속한 호스트의 인증서 지문은 기억된다. 나중에 지문이 바뀌면 접속을 거부하고 경고한다(호스트를 다시 설치했거나 중간에서 가로채는 경우). 확실할 때만 **새 지문 믿고 다시 접속**.
 
@@ -163,7 +174,14 @@ shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 1. **접속하기** 에 집 주소와 고정 접속 코드를 넣고 "키체인에 저장" 을 체크한 채 **접속**.
 2. 다음부터는 주소록의 **바로 접속** 한 번.
 
-**아직 안 되는 것:** 집 Mac 이 로그아웃 상태이거나 재부팅 직후 로그인 전이면 접속할 수 없다(P5). 화면 잠금 상태에서의 캡처 · 입력은 아직 검증하지 않았다. 출근 전에 집 Mac 에서 한 번 시험해 보는 걸 권한다.
+**로그아웃 · 재부팅 대비 (선택)**
+
+집 Mac 에서 **로그인 화면에서도 접속 (macOS)** › **켜기** (관리자 암호). 로그인 화면이 떠 있는 동안 고정 접속 코드로 접속할 수 있다.
+
+**주의 · 검증 전**
+
+- macOS 로그인 화면 접속과 화면 잠금 상태의 캡처 · 입력은 아직 실제로 검증하지 않았다. 출근 전에 집 Mac 에서 로그아웃 → 다른 기기로 접속을 한 번 시험해 본다.
+- FileVault 를 켠 Mac 은 재부팅 직후 디스크 잠금 해제 화면(macOS 가 뜨기 전)에서는 어떤 방법으로도 접속할 수 없다.
 
 ## 명령줄
 
@@ -172,7 +190,7 @@ shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 ```bash
 # 호스트
 legato-host serve                                     # 접속 대기
-legato-host serve --port 47820 --max-width 2560 --fps 60 --bitrate 12000000
+legato-host serve --max-width 2560 --fps 30 --bitrate 12000000   # 화질 상한 (기본 3840 · 60 · 20Mbps)
 legato-host serve --allow-sleep                       # 대기 중에도 잠자기 허용 (기본은 막음)
 legato-host set-password --generate                   # 표시 비밀번호 새로 만들기
 echo '나만-아는-긴-접속-코드' | legato-host set-access-code   # 고정 접속 코드 (10자 이상, 해시만 저장)
@@ -181,15 +199,19 @@ legato-host configure --rotate-display-password=false  # 표시 비밀번호를 
 legato-host configure --allow-display-password=false   # 접속 코드로만 접속 (코드가 있어야 함)
 legato-host info                                      # 주소 · 지문 · 권한 · 설정 상태
 legato-host request-permissions                       # macOS 권한 요청 창 띄우기
+sudo legato-host login-agent install                  # macOS 로그인 화면 에이전트 (uninstall / status)
+legato-host service install                           # Windows 서비스 모드, 관리자 (uninstall / status)
 
 # 뷰어 (비밀번호·접속 코드는 LEGATO_PASSWORD 환경 변수, 없으면 프롬프트)
 legato-viewer 192.168.0.10                            # 포트 생략 시 47820
-legato-viewer 192.168.0.10:47820 --windowed --display 2
+legato-viewer 192.168.0.10:47820 --windowed --display 1 --display 2   # 특정 모니터만 (생략하면 전부)
+legato-viewer 192.168.0.10 --quality high             # auto | high | balanced | low
+legato-viewer 192.168.0.10 --no-clipboard --no-swap-cmd-ctrl
 legato-viewer 192.168.0.10 --accept-new-fingerprint   # 바뀐 지문을 받아들이기
 legato-viewer 192.168.0.10 --headless --frames 120 --dump frame.png   # 창 없이 FPS · 지연 측정
 ```
 
-호스트와 뷰어는 표준 출력으로 상태 이벤트를 JSON 한 줄씩 내보낸다(`listening`, `session_started`, `connected`, `closed` 등). 사람용 로그는 표준 에러로 나간다. `RUST_LOG=debug` 로 자세히.
+호스트와 뷰어는 표준 출력으로 상태 이벤트를 JSON 한 줄씩 내보낸다(`listening`, `session_started`, `connected`, `closed` 등). 사람용 로그는 표준 에러로 나간다. `RUST_LOG=debug` 로 자세히, `--log-file <경로>` 로 파일에. `LEGATO_SOFTWARE_ENCODER=1` 이면 Mac 에서도 OpenH264 를 쓴다(비교용).
 
 ## 보안
 
@@ -245,11 +267,14 @@ legato-viewer 192.168.0.10 --headless --frames 120 --dump frame.png   # 창 없�
 | `addressbook.json` | 주소록 (비밀 값 없음) | 〃 |
 | `app.json` | 앱 설정 (자동 접속 대기) | 〃 |
 | 저장한 접속 코드 | 키체인, 서비스 `com.hdomi.legato`, 계정 = 주소 | 자격 증명 관리자 |
-| 로그인 시 실행 | `~/Library/LaunchAgents/` 의 Legato 항목 | 레지스트리 `Run` |
+| 로그인 시 실행 | `~/Library/LaunchAgents/Legato.plist` | 레지스트리 `Run` |
+| 로그인 화면 에이전트 | `/Library/LaunchAgents/com.hdomi.legato.loginwindow.plist`, 로그 `/Library/Logs/Legato/loginwindow.log` | — |
+| 서비스 모드 | — | 서비스 `LegatoHost`, 로그 `설정 폴더\service.log` · `host-helper.log`, 방화벽 규칙 "Legato 호스트 (UDP)" |
+| 업데이트 임시 파일 | `~/Library/Caches/com.hdomi.legato/update/` | `%TEMP%\Legato-update\` |
 
 `LEGATO_CONFIG_DIR` 환경 변수로 설정 폴더를 바꿀 수 있다 (여러 인스턴스 테스트용).
 
-**삭제**: 앱을 지우고 설정 폴더를 지운다. 키체인에서 `com.hdomi.legato` 항목을, 시스템 설정 › 개인정보 보호 및 보안에서 화면 기록 · 손쉬운 사용 항목을 지운다.
+**삭제**: 로그인 화면 에이전트 · 서비스 모드를 먼저 끄고(앱 버튼), 앱을 지우고 설정 폴더를 지운다. 키체인에서 `com.hdomi.legato` 항목을, 시스템 설정 › 개인정보 보호 및 보안에서 화면 기록 · 손쉬운 사용 항목을 지운다.
 
 ## 문제 해결
 
@@ -266,7 +291,12 @@ legato-viewer 192.168.0.10 --headless --frames 120 --dump frame.png   # 창 없�
 | "비밀번호를 너무 많이 틀려서 잠겼어" | 5회 실패 잠금. 표시된 시간 뒤에 다시 시도. 호스트를 다시 켜도 풀린다 |
 | "다른 곳에서 이 호스트에 접속해서 이 연결은 끊겼어" | 다른 뷰어가 인증하고 세션을 넘겨받았다 (한 번에 한 뷰어) |
 | 원격 화면이 검게 나옴 | 호스트 디스플레이가 잠들었거나 잠금 화면. 접속하면 깨우기를 시도하지만 잠금 화면 캡처는 아직 검증 전 |
-| 원격으로 `⌘Q` · `⌘Tab` 을 보내고 싶음 | 지금은 뷰어(로컬)가 먼저 받는다. P3 에서 단축키 전달 예정 |
+| 원격으로 `⌘Tab` · `⌘Space` 가 안 감 | macOS 가 시스템 단축키를 먼저 가져간다. 다른 단축키(⌘Q 포함)는 원격으로 간다 |
+| Windows 에서 UAC 창 · 로그인 화면이 안 보임 / 관리자 창이 안 눌림 | 서비스 모드가 아니면 Windows 가 막는다. **Windows 서비스 모드** 설치 |
+| Ctrl+Alt+Del 이 안 됨 | Windows 서비스 모드에서만 된다 (설치할 때 SoftwareSASGeneration 정책을 켠다) |
+| 업데이트가 "응용 프로그램 폴더로 옮겨" 라고 함 | DMG 안이나 격리된 위치에서 실행한 것. `/Applications` 로 옮긴 뒤 다시 |
+| 업데이트 후 앱이 그대로 | `~/Library/Caches/com.hdomi.legato/update/<버전>/install.log` 확인. 교체 실패 시 원래 앱으로 복구된다 |
+| 화질이 자꾸 내려감 | 네트워크나 뷰어 처리량이 부족하다는 신호. 메뉴에서 단계를 고정하거나 `serve --bitrate` 로 상한을 낮춘다 |
 
 ## 개발
 
@@ -328,12 +358,12 @@ ad-hoc 서명은 빌드마다 서명 해시가 바뀌어 macOS 가 화면 기록
 
 | 단계 | 내용 | 상태 |
 |---|---|---|
-| P0 | workspace, CI, 릴리스 workflow, 자체 서명 | ✅ |
-| P1 | Mac 호스트, Mac/Windows 뷰어, 암호화 · 상호 인증, Tauri 앱, 고정 접속 코드 · 무인 접속, 아이콘 | ✅ |
-| P2 | Windows 호스트 (Windows.Graphics.Capture, SendInput) | |
-| P3 | 멀티 모니터(모니터별 Space), Cmd↔Ctrl 매핑, 단축키 전달, 클립보드, 하드웨어 코덱, 화질 자동 조절, 뷰어 툴바 | |
-| P4 | Windows SYSTEM 서비스: UAC · 잠금 · 로그인 화면, Ctrl+Alt+Del | |
-| P5 | macOS LaunchDaemon: 로그인 화면, 잠금 화면, 관리자 암호 창 검증 | |
-| P6 | 앱 안 업데이터 | |
+| P0 | workspace, CI, 릴리스 workflow, 자체 서명 | ✅ 동작 확인 |
+| P1 | Mac 호스트, Mac/Windows 뷰어, 암호화 · 상호 인증, Tauri 앱, 고정 접속 코드 · 무인 접속, 아이콘 | ✅ Mac 에서 확인 |
+| P2 | Windows 호스트 (DXGI 캡처, SendInput, 클립보드) | 🟡 코드 완료, CI 빌드만 확인 · 실제 Windows 실행 전 |
+| P3 | 멀티 모니터, Cmd↔Ctrl, 단축키 전달, 클립보드, VideoToolbox, 화질 자동 조절, 뷰어 메뉴 | ✅ Mac 에서 확인 (멀티 모니터는 모니터 1대라 미확인) |
+| P4 | Windows SYSTEM 서비스: UAC · 잠금 · 로그인 화면, Ctrl+Alt+Del | 🟡 코드 완료, 실제 Windows 실행 전 |
+| P5 | macOS 로그인 화면 에이전트 | 🟡 코드 완료, 로그아웃 상태 검증 전 |
+| P6 | 앱 안 업데이터 | ✅ Mac 에서 실제 릴리스로 교체 확인 (Windows 설치 파일 경로는 미확인) |
 
-**검증 상태**: Mac ↔ Mac 은 같은 기기 루프백과 앱 실제 조작으로 확인했다. Windows 빌드는 CI 첫 실행 전이라 아직 확인하지 않았고, 두 대의 실제 기기 사이 · 외부 네트워크 연결도 아직 측정하지 않았다.
+**남은 일**: Windows 하드웨어 인코더(Media Foundation), Windows 원격 커서 모양 그리기(지금은 뷰어 쪽 로컬 커서만 보임), Windows · 로그인 화면 실제 기기 검증.
